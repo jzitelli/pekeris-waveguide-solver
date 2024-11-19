@@ -21,7 +21,7 @@ MODULE pekeris
     USE underwater
     IMPLICIT NONE
 
-    IF (pekeris_initialized .EQ. .TRUE.) RETURN
+    IF (pekeris_initialized .EQV. .TRUE.) RETURN
     IF (N_LAYERS < 2) THEN
        WRITE(*,*) 'init_pekeris: 2 layers needed!'
        RETURN
@@ -259,7 +259,7 @@ SUBROUTINE exact_pekeris(x, H, gradH)
   INTEGER :: index
   LOGICAL :: full_flag
 
-  IF (pekeris_initialized .EQ. .FALSE.) THEN
+  IF (pekeris_initialized .EQV. .FALSE.) THEN
      CALL init_pekeris
      CALL init_lookup
   ENDIF
@@ -429,7 +429,7 @@ SUBROUTINE pekeris_moi(x, n_rays, p, grad_p)
   DOUBLE PRECISION :: zs(4), n_s(4), n_b(4), d, z1, z2, fac, h, cos_inc
   DOUBLE COMPLEX :: temp, temp2, k2z, ref, cos_tra, kr
 
-  IF (pekeris_initialized .EQ. .FALSE.) THEN
+  IF (pekeris_initialized .EQV. .FALSE.) THEN
      CALL init_pekeris
   ENDIF
 
