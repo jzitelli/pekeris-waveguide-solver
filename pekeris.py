@@ -12,6 +12,17 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.special import jv, yv, kv  # Bessel functions J_n, Y_n, K_n
 from scipy.integrate import quad
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+
+
+def _compute_pressure_point(args):
+    """Worker function for parallel pressure computation.
+
+    This is a module-level function so it can be pickled for multiprocessing.
+    """
+    wg, r, z = args
+    return wg.pressure(r, z)
 
 
 class PekerisWaveguide:
@@ -397,7 +408,7 @@ class PekerisWaveguide:
         return np.conj(grad_r), np.conj(-grad_z)
 
     def pressure_field(self, r_array: np.ndarray, z_array: np.ndarray,
-                      show_progress: bool = True) -> np.ndarray:
+                      show_progress: bool = True, n_jobs: int = None) -> np.ndarray:
         """
         Compute pressure field on a grid.
 
@@ -409,20 +420,49 @@ class PekerisWaveguide:
             1D array of depths (m)
         show_progress : bool
             Print progress indicator (useful when including continuous spectrum)
+        n_jobs : int
+            Number of parallel processes. Default (None) uses all available CPUs.
+            Set to 1 for serial computation.
 
         Returns
         -------
         np.ndarray
             2D complex array of pressure values, shape (len(z_array), len(r_array))
         """
-        P = np.zeros((len(z_array), len(r_array)), dtype=complex)
+        nz, nr = len(z_array), len(r_array)
+        total = nz * nr
 
-        total = len(z_array) * len(r_array)
-        for i, z in enumerate(z_array):
-            for j, r in enumerate(r_array):
-                P[i, j] = self.pressure(r, z)
-            if show_progress and (i + 1) % 10 == 0:
-                print(f"  Progress: {(i+1)*len(r_array)}/{total} points")
+        # Determine number of workers
+        if n_jobs is None:
+            n_jobs = multiprocessing.cpu_count()
+        n_jobs = min(n_jobs, total)  # Don't use more workers than points
+
+        # Serial computation
+        if n_jobs == 1:
+            P = np.zeros((nz, nr), dtype=complex)
+            for i, z in enumerate(z_array):
+                for j, r in enumerate(r_array):
+                    P[i, j] = self.pressure(r, z)
+                if show_progress and (i + 1) % 10 == 0:
+                    print(f"  Progress: {(i+1)*nr}/{total} points")
+            return P
+
+        # Parallel computation
+        if show_progress:
+            print(f"  Using {n_jobs} parallel workers for {total} points...")
+
+        # Build list of all (wg, r, z) argument tuples
+        args_list = [(self, r, z) for z in z_array for r in r_array]
+
+        # Use ProcessPoolExecutor for parallel computation
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            results = list(executor.map(_compute_pressure_point, args_list, chunksize=max(1, total // (n_jobs * 4))))
+
+        # Reshape results to 2D array
+        P = np.array(results, dtype=complex).reshape(nz, nr)
+
+        if show_progress:
+            print(f"  Completed {total} points")
 
         return P
 
@@ -433,7 +473,7 @@ class PekerisWaveguide:
                 f"n_modes={self.n_modes}, mode={mode_str})")
 
 
-def example(show_plot=True, discrete_only=False):
+def example(show_plot=True, discrete_only=False, n_jobs=None):
     """Run an example calculation matching the Fortran test case."""
 
     # Example parameters (from commented main() in pekeris.c)
@@ -473,13 +513,14 @@ def example(show_plot=True, discrete_only=False):
     print(f"  dp/dz = {grad_z}")
 
     if show_plot:
-        plot_field(wg)
+        plot_field(wg, n_jobs=n_jobs)
 
     return wg
 
 
 def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
-               nr: int = 200, nz: int = 100, r_min: float = 1.0, save_only: bool = False):
+               nr: int = 200, nz: int = 100, r_min: float = 1.0, save_only: bool = False,
+               n_jobs: int = None):
     """
     Plot the pressure field magnitude and phase.
 
@@ -499,6 +540,8 @@ def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
         Minimum range (m), avoid r=0 singularity
     save_only : bool
         If True, only save to file without displaying (for headless environments)
+    n_jobs : int
+        Number of parallel processes. Default (None) uses all available CPUs.
     """
     import matplotlib
     if save_only:
@@ -514,7 +557,7 @@ def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
 
     mode_str = "discrete only" if wg.discrete_modes_only else "discrete + continuous"
     print(f"\nComputing pressure field on {nr}x{nz} grid ({mode_str})...")
-    P = wg.pressure_field(r_array, z_array)
+    P = wg.pressure_field(r_array, z_array, n_jobs=n_jobs)
 
     # Compute transmission loss: TL = -20*log10(|p| * r) relative to 1m
     # For display, use magnitude in dB relative to max
@@ -565,6 +608,8 @@ if __name__ == "__main__":
                        help='Use discrete modes only (skip continuous spectrum)')
     parser.add_argument('--no-plot', action='store_true',
                        help='Skip plotting')
+    parser.add_argument('-j', '--jobs', type=int, default=None,
+                       help='Number of parallel processes (default: all CPUs)')
     args = parser.parse_args()
 
-    example(show_plot=not args.no_plot, discrete_only=args.discrete_only)
+    example(show_plot=not args.no_plot, discrete_only=args.discrete_only, n_jobs=args.jobs)
