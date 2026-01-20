@@ -1,21 +1,22 @@
 """
-Pekeris waveguide exact solution - discrete modes only.
+Pekeris waveguide exact solution.
 
 This module computes the acoustic pressure field in a two-layer Pekeris waveguide:
 - Layer 1 (water): constant sound speed c1, density rho1, depth H
 - Layer 2 (sediment): constant sound speed c2 > c1, density rho2, semi-infinite
 
-The solution uses the normal mode representation with discrete (trapped) modes.
+The solution includes both discrete (trapped) modes and the continuous spectrum.
 """
 
 import numpy as np
 from scipy.optimize import brentq
-from scipy.special import jv, yv  # Bessel functions J_n and Y_n
+from scipy.special import jv, yv, kv  # Bessel functions J_n, Y_n, K_n
+from scipy.integrate import quad
 
 
 class PekerisWaveguide:
     """
-    Pekeris waveguide solver for discrete normal modes.
+    Pekeris waveguide solver.
 
     Parameters
     ----------
@@ -33,10 +34,17 @@ class PekerisWaveguide:
         Depth of water layer (m)
     z_s : float
         Source depth (m), measured from surface (positive downward)
+    discrete_modes_only : bool
+        If True, only compute discrete modes (faster but incomplete).
+        If False (default), include continuous spectrum contribution.
+    quadrature_rtol : float
+        Relative tolerance for continuous spectrum integration (default 1e-7)
     """
 
     def __init__(self, omega: float, c1: float, c2: float,
-                 rho1: float, rho2: float, H: float, z_s: float):
+                 rho1: float, rho2: float, H: float, z_s: float,
+                 discrete_modes_only: bool = False,
+                 quadrature_rtol: float = 1e-7):
 
         if c2 <= c1:
             raise ValueError("Pekeris waveguide requires c2 > c1 for trapped modes")
@@ -50,6 +58,8 @@ class PekerisWaveguide:
         self.rho2 = rho2
         self.H = H
         self.z_s = z_s
+        self.discrete_modes_only = discrete_modes_only
+        self.quadrature_rtol = quadrature_rtol
 
         # Wavenumbers
         self.k1 = omega / c1  # wavenumber in water
@@ -59,6 +69,9 @@ class PekerisWaveguide:
 
         # Density ratio
         self.M = rho2 / rho1
+
+        # Branch point for continuous spectrum (where k_r = k2)
+        self.branch_start = np.sqrt(self.k1_sqrd - self.k2_sqrd)
 
         # Compute eigenvalues and mode properties
         self._compute_modes()
@@ -129,6 +142,206 @@ class PekerisWaveguide:
         term2 = (1/self.rho2) * np.sin(self.k1_z*self.H)**2 / self.k2_z
         self.A_sqrd = 2.0 / (term1 + term2)
 
+    # -------------------------------------------------------------------------
+    # Continuous spectrum integrand functions
+    # The integration variable x is the vertical wavenumber in the water layer (k1_z)
+    # -------------------------------------------------------------------------
+
+    def _cont_spectrum_denominator(self, x: float) -> float:
+        """Common denominator for continuous spectrum integrands."""
+        # k_r² = k1² - x² (for definite region) or x² - k1² (for indefinite)
+        # k2_z² = k2² - k_r² = k2² - k1² + x²
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        sin_sqrd = np.sin(x * self.H)**2
+        ratio = (self.M * x / k2_z)**2
+        return ratio + (1 - ratio) * sin_sqrd
+
+    def _integrand_definite_real(self, x: float, r: float, z: float) -> float:
+        """Real part integrand for definite region [branch_start, k1] using J0."""
+        k_r = np.sqrt(self.k1_sqrd - x**2)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        return jv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+
+    def _integrand_definite_imag(self, x: float, r: float, z: float) -> float:
+        """Imaginary part integrand for definite region [branch_start, k1] using Y0."""
+        k_r = np.sqrt(self.k1_sqrd - x**2)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        return yv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+
+    def _integrand_indefinite(self, x: float, r: float, z: float) -> float:
+        """Integrand for indefinite region [k1, cutoff] using K0."""
+        # In this region, k_r is imaginary: k_r = i * sqrt(x² - k1²)
+        # So we use K0 which is related to H0^(2) for imaginary argument
+        k_r_mag = np.sqrt(x**2 - self.k1_sqrd)  # magnitude of imaginary k_r
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        # Factor of -2/pi comes from K0(x) = -pi/2 * i * H0^(2)(ix) relationship
+        return -(2/np.pi) * kv(0, k_r_mag * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+
+    def _integrand_definite_real_dr(self, x: float, r: float, z: float) -> float:
+        """d/dr of real part integrand for definite region."""
+        k_r = np.sqrt(self.k1_sqrd - x**2)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        # d/dr of J0(k_r * r) = -k_r * J1(k_r * r)
+        return -k_r * jv(1, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+
+    def _integrand_definite_imag_dr(self, x: float, r: float, z: float) -> float:
+        """d/dr of imaginary part integrand for definite region."""
+        k_r = np.sqrt(self.k1_sqrd - x**2)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        return -k_r * yv(1, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+
+    def _integrand_indefinite_dr(self, x: float, r: float, z: float) -> float:
+        """d/dr of integrand for indefinite region."""
+        k_r_mag = np.sqrt(x**2 - self.k1_sqrd)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        # d/dr of K0(k_r_mag * r) = -k_r_mag * K1(k_r_mag * r)
+        return (2/np.pi) * k_r_mag * kv(1, k_r_mag * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+
+    def _integrand_definite_real_dz(self, x: float, r: float, z: float) -> float:
+        """d/dz of real part integrand for definite region."""
+        k_r = np.sqrt(self.k1_sqrd - x**2)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        return x * jv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.cos(x * z) / denom
+
+    def _integrand_definite_imag_dz(self, x: float, r: float, z: float) -> float:
+        """d/dz of imaginary part integrand for definite region."""
+        k_r = np.sqrt(self.k1_sqrd - x**2)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        return x * yv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.cos(x * z) / denom
+
+    def _integrand_indefinite_dz(self, x: float, r: float, z: float) -> float:
+        """d/dz of integrand for indefinite region."""
+        k_r_mag = np.sqrt(x**2 - self.k1_sqrd)
+        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+        denom = self._cont_spectrum_denominator(x)
+        return -(2/np.pi) * x * kv(0, k_r_mag * r) * (x / k2_z) * np.sin(x * self.z_s) * np.cos(x * z) / denom
+
+    def _continuous_spectrum_pressure(self, r: float, z: float) -> complex:
+        """
+        Compute the continuous spectrum contribution to pressure.
+
+        The continuous spectrum integral is split into two parts:
+        1. Definite region: [branch_start, k1] - oscillatory in water layer
+        2. Indefinite region: [k1, cutoff] - evanescent in water layer
+        """
+        # Definite region integrals
+        int_real, _ = quad(self._integrand_definite_real, self.branch_start, self.k1,
+                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+        int_imag, _ = quad(self._integrand_definite_imag, self.branch_start, self.k1,
+                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+
+        # Indefinite region integral (evanescent)
+        # Cutoff chosen so that K0 argument is large enough for negligible contribution
+        cutoff = np.sqrt((100.0 / r)**2 + self.k1_sqrd)
+        int_indef, _ = quad(self._integrand_indefinite, self.k1, cutoff,
+                           args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+
+        # Combine: the indefinite integral contributes to imaginary part
+        integral = complex(int_real, int_imag + int_indef)
+
+        # Scale factor and phase adjustment (matching Fortran)
+        # The factor 2*M comes from the residue calculation
+        return 2 * self.M * complex(-integral.imag, integral.real)
+
+    def _continuous_spectrum_gradient(self, r: float, z: float) -> tuple[complex, complex]:
+        """
+        Compute the continuous spectrum contribution to pressure gradient.
+        """
+        # d/dr integrals
+        int_real_dr, _ = quad(self._integrand_definite_real_dr, self.branch_start, self.k1,
+                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+        int_imag_dr, _ = quad(self._integrand_definite_imag_dr, self.branch_start, self.k1,
+                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+        cutoff = np.sqrt((100.0 / r)**2 + self.k1_sqrd)
+        int_indef_dr, _ = quad(self._integrand_indefinite_dr, self.k1, cutoff,
+                              args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+
+        integral_dr = complex(int_real_dr, int_imag_dr + int_indef_dr)
+        grad_r = 2 * self.M * complex(-integral_dr.imag, integral_dr.real)
+
+        # d/dz integrals
+        int_real_dz, _ = quad(self._integrand_definite_real_dz, self.branch_start, self.k1,
+                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+        int_imag_dz, _ = quad(self._integrand_definite_imag_dz, self.branch_start, self.k1,
+                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+        int_indef_dz, _ = quad(self._integrand_indefinite_dz, self.k1, cutoff,
+                              args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+
+        integral_dz = complex(int_real_dz, int_imag_dz + int_indef_dz)
+        grad_z = 2 * self.M * complex(-integral_dz.imag, integral_dz.real)
+
+        return grad_r, grad_z
+
+    def _discrete_modes_pressure(self, r: float, z: float) -> complex:
+        """Compute discrete modes contribution to pressure."""
+        if self.n_modes == 0:
+            return 0j
+
+        p = 0j
+
+        def hankel2_0(x):
+            return jv(0, x) - 1j * yv(0, x)
+
+        if z <= self.H:
+            for n in range(self.n_modes):
+                modal_amp = self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) * np.sin(self.k1_z[n] * z)
+                p += modal_amp * hankel2_0(self.k_r[n] * r)
+        else:
+            for n in range(self.n_modes):
+                modal_amp = (self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) *
+                            np.sin(self.k1_z[n] * self.H) * np.exp(self.k2_z[n] * (self.H - z)))
+                p += modal_amp * hankel2_0(self.k_r[n] * r)
+
+        # Scale and phase adjustment
+        return complex(-p.imag, p.real) * np.pi / self.rho1
+
+    def _discrete_modes_gradient(self, r: float, z: float) -> tuple[complex, complex]:
+        """Compute discrete modes contribution to pressure gradient."""
+        if self.n_modes == 0:
+            return 0j, 0j
+
+        grad_r = 0j
+        grad_z = 0j
+
+        def hankel2_0(x):
+            return jv(0, x) - 1j * yv(0, x)
+
+        def hankel2_1(x):
+            return jv(1, x) - 1j * yv(1, x)
+
+        if z <= self.H:
+            for n in range(self.n_modes):
+                sin_zs = np.sin(self.k1_z[n] * self.z_s)
+                sin_z = np.sin(self.k1_z[n] * z)
+                cos_z = np.cos(self.k1_z[n] * z)
+                H0 = hankel2_0(self.k_r[n] * r)
+                H1 = hankel2_1(self.k_r[n] * r)
+
+                grad_r += -self.k_r[n] * self.A_sqrd[n] * sin_zs * sin_z * H1
+                grad_z += self.k1_z[n] * self.A_sqrd[n] * sin_zs * cos_z * H0
+        else:
+            for n in range(self.n_modes):
+                sin_zs = np.sin(self.k1_z[n] * self.z_s)
+                sin_H = np.sin(self.k1_z[n] * self.H)
+                exp_decay = np.exp(self.k2_z[n] * (self.H - z))
+                H0 = hankel2_0(self.k_r[n] * r)
+                H1 = hankel2_1(self.k_r[n] * r)
+
+                modal_base = self.A_sqrd[n] * sin_zs * sin_H * exp_decay
+                grad_r += -self.k_r[n] * modal_base * H1
+                grad_z += -self.k2_z[n] * modal_base * H0
+
+        scale = 1j * np.pi / self.rho1
+        return grad_r * scale, grad_z * scale
+
     def pressure(self, r: float, z: float) -> complex:
         """
         Compute acoustic pressure at position (r, z).
@@ -145,29 +358,12 @@ class PekerisWaveguide:
         complex
             Complex acoustic pressure
         """
-        if self.n_modes == 0:
-            return 0j
+        # Discrete modes contribution
+        p = self._discrete_modes_pressure(r, z)
 
-        p = 0j
-
-        # Hankel function of second kind: H0^(2)(x) = J0(x) - i*Y0(x)
-        def hankel2_0(x):
-            return jv(0, x) - 1j * yv(0, x)
-
-        if z <= self.H:
-            # In water layer
-            for n in range(self.n_modes):
-                modal_amp = self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) * np.sin(self.k1_z[n] * z)
-                p += modal_amp * hankel2_0(self.k_r[n] * r)
-        else:
-            # In sediment (exponential decay)
-            for n in range(self.n_modes):
-                modal_amp = (self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) *
-                            np.sin(self.k1_z[n] * self.H) * np.exp(self.k2_z[n] * (self.H - z)))
-                p += modal_amp * hankel2_0(self.k_r[n] * r)
-
-        # Scale factor (from normal mode theory)
-        p *= 1j * np.pi / self.rho1
+        # Add continuous spectrum if requested
+        if not self.discrete_modes_only and z <= self.H:
+            p += self._continuous_spectrum_pressure(r, z)
 
         # Conjugate for exp(+iωt) time convention
         return np.conj(p)
@@ -188,58 +384,20 @@ class PekerisWaveguide:
         tuple[complex, complex]
             (dp/dr, dp/dz) - complex pressure gradients
         """
-        if self.n_modes == 0:
-            return 0j, 0j
+        # Discrete modes contribution
+        grad_r, grad_z = self._discrete_modes_gradient(r, z)
 
-        grad_r = 0j
-        grad_z = 0j
+        # Add continuous spectrum if requested
+        if not self.discrete_modes_only and z <= self.H:
+            cont_r, cont_z = self._continuous_spectrum_gradient(r, z)
+            grad_r += cont_r
+            grad_z += cont_z
 
-        # Hankel functions
-        def hankel2_0(x):
-            return jv(0, x) - 1j * yv(0, x)
+        # Correct for z convention and conjugate for exp(+iωt)
+        return np.conj(grad_r), np.conj(-grad_z)
 
-        def hankel2_1(x):
-            return jv(1, x) - 1j * yv(1, x)
-
-        if z <= self.H:
-            # In water layer
-            for n in range(self.n_modes):
-                sin_zs = np.sin(self.k1_z[n] * self.z_s)
-                sin_z = np.sin(self.k1_z[n] * z)
-                cos_z = np.cos(self.k1_z[n] * z)
-                H0 = hankel2_0(self.k_r[n] * r)
-                H1 = hankel2_1(self.k_r[n] * r)
-
-                # d/dr: derivative of H0^(2)(kr*r) is -kr * H1^(2)(kr*r)
-                grad_r += -self.k_r[n] * self.A_sqrd[n] * sin_zs * sin_z * H1
-
-                # d/dz: derivative of sin(k1z*z) is k1z * cos(k1z*z)
-                grad_z += self.k1_z[n] * self.A_sqrd[n] * sin_zs * cos_z * H0
-        else:
-            # In sediment
-            for n in range(self.n_modes):
-                sin_zs = np.sin(self.k1_z[n] * self.z_s)
-                sin_H = np.sin(self.k1_z[n] * self.H)
-                exp_decay = np.exp(self.k2_z[n] * (self.H - z))
-                H0 = hankel2_0(self.k_r[n] * r)
-                H1 = hankel2_1(self.k_r[n] * r)
-
-                modal_base = self.A_sqrd[n] * sin_zs * sin_H * exp_decay
-
-                grad_r += -self.k_r[n] * modal_base * H1
-
-                # d/dz of exp(k2z*(H-z)) is -k2z * exp(k2z*(H-z))
-                grad_z += -self.k2_z[n] * modal_base * H0
-
-        # Scale factor
-        scale = 1j * np.pi / self.rho1
-        grad_r *= scale
-        grad_z *= scale
-
-        # Conjugate for exp(+iωt) time convention
-        return np.conj(grad_r), np.conj(grad_z)
-
-    def pressure_field(self, r_array: np.ndarray, z_array: np.ndarray) -> np.ndarray:
+    def pressure_field(self, r_array: np.ndarray, z_array: np.ndarray,
+                      show_progress: bool = True) -> np.ndarray:
         """
         Compute pressure field on a grid.
 
@@ -249,28 +407,33 @@ class PekerisWaveguide:
             1D array of radial distances (m)
         z_array : np.ndarray
             1D array of depths (m)
+        show_progress : bool
+            Print progress indicator (useful when including continuous spectrum)
 
         Returns
         -------
         np.ndarray
             2D complex array of pressure values, shape (len(z_array), len(r_array))
         """
-        R, Z = np.meshgrid(r_array, z_array)
-        P = np.zeros_like(R, dtype=complex)
+        P = np.zeros((len(z_array), len(r_array)), dtype=complex)
 
+        total = len(z_array) * len(r_array)
         for i, z in enumerate(z_array):
             for j, r in enumerate(r_array):
                 P[i, j] = self.pressure(r, z)
+            if show_progress and (i + 1) % 10 == 0:
+                print(f"  Progress: {(i+1)*len(r_array)}/{total} points")
 
         return P
 
     def __repr__(self):
+        mode_str = "discrete only" if self.discrete_modes_only else "discrete + continuous"
         return (f"PekerisWaveguide(omega={self.omega}, c1={self.c1}, c2={self.c2}, "
                 f"rho1={self.rho1}, rho2={self.rho2}, H={self.H}, z_s={self.z_s}, "
-                f"n_modes={self.n_modes})")
+                f"n_modes={self.n_modes}, mode={mode_str})")
 
 
-def example(show_plot=True):
+def example(show_plot=True, discrete_only=False):
     """Run an example calculation matching the Fortran test case."""
 
     # Example parameters (from commented main() in pekeris.c)
@@ -283,7 +446,8 @@ def example(show_plot=True):
     z_s = 30.0          # m (source depth)
 
     # Create waveguide
-    wg = PekerisWaveguide(omega, c1, c2, rho1, rho2, H, z_s)
+    wg = PekerisWaveguide(omega, c1, c2, rho1, rho2, H, z_s,
+                          discrete_modes_only=discrete_only)
 
     print(f"Pekeris Waveguide Parameters:")
     print(f"  omega = {omega} rad/s (f = {omega/(2*np.pi):.2f} Hz)")
@@ -291,6 +455,7 @@ def example(show_plot=True):
     print(f"  rho1 = {rho1} kg/m³, rho2 = {rho2} kg/m³")
     print(f"  H = {H} m, z_s = {z_s} m")
     print(f"\nNumber of discrete modes: {wg.n_modes}")
+    print(f"Continuous spectrum: {'disabled' if discrete_only else 'enabled'}")
     print(f"\nEigenvalues (kr²):")
     for i, ev in enumerate(wg.eigenvalues):
         print(f"  Mode {i+1}: kr² = {ev:.10f}, kr = {np.sqrt(ev):.10f}")
@@ -347,7 +512,8 @@ def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
     r_array = np.linspace(r_min, r_max, nr)
     z_array = np.linspace(0, z_max, nz)
 
-    print(f"\nComputing pressure field on {nr}x{nz} grid...")
+    mode_str = "discrete only" if wg.discrete_modes_only else "discrete + continuous"
+    print(f"\nComputing pressure field on {nr}x{nz} grid ({mode_str})...")
     P = wg.pressure_field(r_array, z_array)
 
     # Compute transmission loss: TL = -20*log10(|p| * r) relative to 1m
@@ -360,11 +526,11 @@ def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
 
     # Plot 1: Magnitude (dB)
     ax1 = axes[0]
-    im1 = ax1.pcolormesh(r_array, z_array, P_db, shading='auto', cmap='viridis', vmin=-40, vmax=0)
+    im1 = ax1.pcolormesh(r_array, z_array, P_db, shading='auto', cmap='viridis', vmin=-100, vmax=0)
     ax1.axhline(wg.H, color='white', linestyle='--', linewidth=1, label='Seafloor')
     ax1.axhline(wg.z_s, color='red', linestyle=':', linewidth=1, label=f'Source (z={wg.z_s}m)')
     ax1.set_ylabel('Depth (m)')
-    ax1.set_title(f'Pressure Magnitude (dB re max) - {wg.n_modes} discrete modes')
+    ax1.set_title(f'Pressure Magnitude (dB re max) - {wg.n_modes} modes ({mode_str})')
     ax1.invert_yaxis()
     ax1.legend(loc='lower right')
     cbar1 = fig.colorbar(im1, ax=ax1, label='dB')
@@ -372,7 +538,7 @@ def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
     # Plot 2: Real part (shows interference pattern)
     ax2 = axes[1]
     P_real = np.real(P)
-    vlim = np.max(np.abs(P_real)) * 0.5
+    vlim = np.max(np.abs(P_real)) * 0.02
     im2 = ax2.pcolormesh(r_array, z_array, P_real, shading='auto', cmap='RdBu_r', vmin=-vlim, vmax=vlim)
     ax2.axhline(wg.H, color='black', linestyle='--', linewidth=1)
     ax2.axhline(wg.z_s, color='red', linestyle=':', linewidth=1)
@@ -385,11 +551,20 @@ def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
     plt.suptitle(f'Pekeris Waveguide: f={wg.omega/(2*np.pi):.1f} Hz, H={wg.H}m, '
                  f'c₁={wg.c1} m/s, c₂={wg.c2} m/s', fontsize=12)
     plt.tight_layout()
-    plt.savefig('pekeris_field.png', dpi=150)
-    print("Saved figure to pekeris_field.png")
+    filename = 'pekeris_field.png'
+    plt.savefig(filename, dpi=150)
+    print(f"Saved figure to {filename}")
     if not save_only:
         plt.show()
 
 
 if __name__ == "__main__":
-    example()
+    import argparse
+    parser = argparse.ArgumentParser(description='Pekeris waveguide solver')
+    parser.add_argument('--discrete-only', action='store_true',
+                       help='Use discrete modes only (skip continuous spectrum)')
+    parser.add_argument('--no-plot', action='store_true',
+                       help='Skip plotting')
+    args = parser.parse_args()
+
+    example(show_plot=not args.no_plot, discrete_only=args.discrete_only)
