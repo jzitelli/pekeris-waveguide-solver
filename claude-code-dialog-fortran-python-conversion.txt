@@ -1,0 +1,1538 @@
+
+ ▐▛███▜▌   Claude Code v2.1.12
+▝▜█████▛▘  Opus 4.5 · Claude Pro
+  ▘▘ ▝▝    ~/GitHub/pekeris-waveguide-solver
+
+❯ i want to re-implement this code as a pure python implementation, using the functionality of scipy for the root finding (determining the discrete modes), bessel functions, and
+  integration (continuous spectrum contribution).  to begin, just consider the discrete mode part of the solution.  we can tackle the continuous spectrum later.  any logic re: the PML
+  should also be abandoned.
+
+● I'll start by exploring the existing Fortran code to understand the discrete mode implementation, then create a Python version.
+
+● Read(pekeris.f90)
+  ⎿  Read 489 lines
+
+● Read(pekeris.c)
+  ⎿  Read 152 lines
+
+● Let me also check the underwater.f90 file to understand the parameter setup.
+
+● Read(underwater.f90)
+  ⎿  Read 65 lines
+
+● Read(underwater_layers.f90)
+  ⎿  Read 42 lines
+
+● Now I have a clear picture of the discrete mode implementation. Let me create a Python version.
+
+● Write(pekeris.py)
+  ⎿  Wrote 315 lines to pekeris.py
+      1 """
+      2 Pekeris waveguide exact solution - discrete modes only.
+      3 This module computes the acoustic pressure field in a two-layer Pekeris waveguide:
+      4 - Layer 1 (water): constant sound speed c1, density rho1, depth H
+      5 - Layer 2 (sediment): constant sound speed c2 > c1, density rho2, semi-infinite
+      6 The solution uses the normal mode representation with discrete (trapped) modes.
+      7 """
+     … +305 lines (ctrl+o to expand)
+
+● Let me test the implementation.
+
+● Bash(python pekeris.py)
+  ⎿  Error: Exit code 127
+     /bin/bash: line 1: python: command not found
+
+● Bash(python3 pekeris.py)
+  ⎿  Error: Exit code 1
+     Traceback (most recent call last):
+       File "/home/jzitelli/GitHub/pekeris-waveguide-solver/pekeris.py", line 11, in <module>
+         import numpy as np
+     ModuleNotFoundError: No module named 'numpy'
+
+● Bash(which python3 && python3 --version && pip3 list 2>/dev/null | head -20 || conda run python pekeris.py 2>/dev/null || echo "Checking for conda environments..." &…)
+  ⎿  /usr/bin/python3
+     Python 3.12.3
+     No conda found
+
+● Bash(pip3 install --user numpy scipy 2>&1 | tail -10)
+  ⎿  /bin/bash: line 1: pip3: command not found
+
+● Bash(ls -la ~/.local/bin/ 2>/dev/null; which -a python3 python; ls /home/jzitelli/miniconda*/bin/python 2>/dev/null || ls /home/jzitelli/anaconda*/bin/python 2>/dev/…)
+  ⎿  total 8
+     drwxr-xr-x 2 jzitelli jzitelli 4096 Jan 18 14:55 .
+     drwxr-xr-x 5 jzitelli jzitelli 4096 Jan 15 15:51 ..
+     … +3 lines (ctrl+o to expand)
+
+● The Python environment doesn't have numpy/scipy installed, but the code is written. Let me explain what I've implemented and you can run it once you have the dependencies.
+
+  Summary of the Python implementation (pekeris.py):
+
+  The PekerisWaveguide class implements the discrete mode solution with:
+
+  1. Eigenvalue computation using scipy.optimize.brentq:
+    - Solves the characteristic equation: k1z·H - arctan(k2z/(M·k1z)) - (n-0.5)π = 0
+    - Where k1z = √(k1² - kr²) and k2z = √(kr² - k2²)
+  2. Mode normalization matching the Fortran:
+  A² = 2 / [(1/ρ1)(H - sin(2k1z·H)/(2k1z)) + (1/ρ2)sin²(k1z·H)/k2z]
+  3. Pressure field using scipy.special.jv and yv for Bessel functions:
+    - In water (z ≤ H): p = Σ A² sin(k1z·zs) sin(k1z·z) H₀⁽²⁾(kr·r)
+    - In sediment (z > H): p = Σ A² sin(k1z·zs) sin(k1z·H) exp(k2z(H-z)) H₀⁽²⁾(kr·r)
+  4. Pressure gradients for both radial and depth derivatives
+
+  To run it, install the dependencies:
+  pip install numpy scipy
+  python pekeris.py
+
+  Would you like me to:
+  1. Add vectorized evaluation for better performance on grids?
+  2. Add comparison/validation code against the Fortran version?
+  3. Start on the continuous spectrum integration?
+
+✻ Brewed for 2m 2s
+
+❯ i ran @pekeris.py successfully.  i would like to inspect the current results visually.  can you add visualization of the field the script (using e.g. matplotlib pcolormesh)?
+  ⎿  Read pekeris.py (315 lines)
+
+● Read(pekeris.py)
+  ⎿  Read 315 lines
+
+● Update(pekeris.py)
+  ⎿  Added 76 lines, removed 1 line
+      270                  f"n_modes={self.n_modes})")
+      271
+      272
+      273 -def example():
+      273 +def example(show_plot=True):
+      274      """Run an example calculation matching the Fortran test case."""
+      275
+      276      # Example parameters (from commented main() in pekeris.c)
+     ...
+      307      print(f"  dp/dr = {grad_r}")
+      308      print(f"  dp/dz = {grad_z}")
+      309
+      310 +    if show_plot:
+      311 +        plot_field(wg)
+      312 +
+      313      return wg
+      314
+      315
+      316 +def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
+      317 +               nr: int = 200, nz: int = 100, r_min: float = 1.0):
+      318 +    """
+      319 +    Plot the pressure field magnitude and phase.
+      320 +
+      321 +    Parameters
+      322 +    ----------
+      323 +    wg : PekerisWaveguide
+      324 +        Waveguide instance
+      325 +    r_max : float
+      326 +        Maximum range (m)
+      327 +    z_max : float
+      328 +        Maximum depth (m), defaults to 1.5 * H to show some sediment
+      329 +    nr : int
+      330 +        Number of range points
+      331 +    nz : int
+      332 +        Number of depth points
+      333 +    r_min : float
+      334 +        Minimum range (m), avoid r=0 singularity
+      335 +    """
+      336 +    import matplotlib.pyplot as plt
+      337 +
+      338 +    if z_max is None:
+      339 +        z_max = 1.5 * wg.H
+      340 +
+      341 +    # Create grid
+      342 +    r_array = np.linspace(r_min, r_max, nr)
+      343 +    z_array = np.linspace(0, z_max, nz)
+      344 +
+      345 +    print(f"\nComputing pressure field on {nr}x{nz} grid...")
+      346 +    P = wg.pressure_field(r_array, z_array)
+      347 +
+      348 +    # Compute transmission loss: TL = -20*log10(|p| * r) relative to 1m
+      349 +    # For display, use magnitude in dB relative to max
+      350 +    P_abs = np.abs(P)
+      351 +    P_db = 20 * np.log10(P_abs / P_abs.max() + 1e-20)
+      352 +
+      353 +    # Create figure with two subplots
+      354 +    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+      355 +
+      356 +    # Plot 1: Magnitude (dB)
+      357 +    ax1 = axes[0]
+      358 +    im1 = ax1.pcolormesh(r_array, z_array, P_db, shading='auto', cmap='viridis', vmin=-40, vmax=0)
+      359 +    ax1.axhline(wg.H, color='white', linestyle='--', linewidth=1, label='Seafloor')
+      360 +    ax1.axhline(wg.z_s, color='red', linestyle=':', linewidth=1, label=f'Source (z={wg.z_s}m)')
+      361 +    ax1.set_ylabel('Depth (m)')
+      362 +    ax1.set_title(f'Pressure Magnitude (dB re max) - {wg.n_modes} discrete modes')
+      363 +    ax1.invert_yaxis()
+      364 +    ax1.legend(loc='lower right')
+      365 +    cbar1 = fig.colorbar(im1, ax=ax1, label='dB')
+      366 +
+      367 +    # Plot 2: Real part (shows interference pattern)
+      368 +    ax2 = axes[1]
+      369 +    P_real = np.real(P)
+      370 +    vlim = np.max(np.abs(P_real)) * 0.5
+      371 +    im2 = ax2.pcolormesh(r_array, z_array, P_real, shading='auto', cmap='RdBu_r', vmin=-vlim, vmax=vlim)
+      372 +    ax2.axhline(wg.H, color='black', linestyle='--', linewidth=1)
+      373 +    ax2.axhline(wg.z_s, color='red', linestyle=':', linewidth=1)
+      374 +    ax2.set_xlabel('Range (m)')
+      375 +    ax2.set_ylabel('Depth (m)')
+      376 +    ax2.set_title('Pressure (Real part) - showing interference pattern')
+      377 +    ax2.invert_yaxis()
+      378 +    cbar2 = fig.colorbar(im2, ax=ax2, label='Re(p)')
+      379 +
+      380 +    plt.suptitle(f'Pekeris Waveguide: f={wg.omega/(2*np.pi):.1f} Hz, H={wg.H}m, '
+      381 +                 f'c₁={wg.c1} m/s, c₂={wg.c2} m/s', fontsize=12)
+      382 +    plt.tight_layout()
+      383 +    plt.savefig('pekeris_field.png', dpi=150)
+      384 +    print("Saved figure to pekeris_field.png")
+      385 +    plt.show()
+      386 +
+      387 +
+      388  if __name__ == "__main__":
+      389      example()
+
+● Let me also add a non-interactive backend option for headless environments.
+
+● Update(pekeris.py)
+  ⎿  Added 6 lines, removed 1 line
+      314
+      315
+      316  def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
+      317 -               nr: int = 200, nz: int = 100, r_min: float = 1.0):
+      317 +               nr: int = 200, nz: int = 100, r_min: float = 1.0, save_only: bool = False):
+      318      """
+      319      Plot the pressure field magnitude and phase.
+      320
+     ...
+      332          Number of depth points
+      333      r_min : float
+      334          Minimum range (m), avoid r=0 singularity
+      335 +    save_only : bool
+      336 +        If True, only save to file without displaying (for headless environments)
+      337      """
+      338 +    import matplotlib
+      339 +    if save_only:
+      340 +        matplotlib.use('Agg')
+      341      import matplotlib.pyplot as plt
+      342
+      343      if z_max is None:
+
+● Update(pekeris.py)
+  ⎿  Added 2 lines, removed 1 line
+      387      plt.tight_layout()
+      388      plt.savefig('pekeris_field.png', dpi=150)
+      389      print("Saved figure to pekeris_field.png")
+      390 -    plt.show()
+      390 +    if not save_only:
+      391 +        plt.show()
+      392
+      393
+      394  if __name__ == "__main__":
+
+● The visualization has been added. The updated script now:
+
+  1. Top plot: Shows pressure magnitude in dB (relative to max), with the seafloor (dashed white) and source depth (dotted red) marked
+  2. Bottom plot: Shows the real part of the pressure field to visualize the modal interference pattern
+
+  Run it with:
+  python3 pekeris.py
+
+  The figure will be saved to pekeris_field.png. If you're in a headless environment and plt.show() fails, you can modify the call to use save_only=True:
+
+  plot_field(wg, save_only=True)
+
+  Key features of the visualization:
+  - Range from 1m to 1000m (avoiding the r=0 singularity)
+  - Depth extends to 1.5×H to show the evanescent field in the sediment
+  - dB scale clipped at -40 dB for better visibility
+  - Colorbar annotations for both plots
+
+✻ Churned for 52s
+
+❯ the results look reasonable to me. let's git commit pekeris.py now.
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +12 lines (ctrl+o to expand)
+
+● Bash(git log --oneline -5)
+  ⎿  6f189d7 slatec modified bessel functions and stub xermsg (work performed by claude code)
+     f1e266c add CLAUDE.md with build instructions and architecture docs
+     91fe606 add some netlib blas subroutine dependencies
+     … +2 lines (ctrl+o to expand)
+
+● Bash(git add pekeris.py && git commit -m "add Python implementation of Pekeris waveguide discrete modes…)
+  ⎿  [main 4ded96e] add Python implementation of Pekeris waveguide discrete modes
+      1 file changed, 395 insertions(+)
+      create mode 100644 pekeris.py
+
+● Committed as 4ded96e. The commit includes only pekeris.py (the other changes like besselk.f deletion and pekeris_field.png remain uncommitted).
+
+❯ now let's add the continuous spectrum. i still want a user option (as in the fortran implementation) to calculate using only the discrete modes.
+
+● Let me re-read the continuous spectrum part of the Fortran code to make sure I translate it correctly.
+
+● Read(pekeris.f90)
+  ⎿  Read 110 lines
+
+● Read(pekeris.f90)
+  ⎿  Read 70 lines
+
+● Read(pekeris.f90)
+  ⎿  Read 100 lines
+
+● Now I understand the structure. Let me update the Python implementation to add the continuous spectrum.
+
+● Read(pekeris.py)
+  ⎿  Read 396 lines
+
+● Write(pekeris.py)
+  ⎿  Added 570 lines, removed 395 lines
+        1 -"""
+        2 -Pekeris waveguide exact solution - discrete modes only.
+        3 -
+        4 -This module computes the acoustic pressure field in a two-layer Pekeris waveguide:
+        5 -- Layer 1 (water): constant sound speed c1, density rho1, depth H
+        6 -- Layer 2 (sediment): constant sound speed c2 > c1, density rho2, semi-infinite
+        7 -
+        8 -The solution uses the normal mode representation with discrete (trapped) modes.
+        9 -"""
+       10 -
+       11 -import numpy as np
+       12 -from scipy.optimize import brentq
+       13 -from scipy.special import jv, yv  # Bessel functions J_n and Y_n
+       14 -
+       15 -
+       16 -class PekerisWaveguide:
+       17 -    """
+       18 -    Pekeris waveguide solver for discrete normal modes.
+       19 -
+       20 -    Parameters
+       21 -    ----------
+       22 -    omega : float
+       23 -        Angular frequency (rad/s)
+       24 -    c1 : float
+       25 -        Sound speed in water layer (m/s)
+       26 -    c2 : float
+       27 -        Sound speed in sediment layer (m/s), must be > c1
+       28 -    rho1 : float
+       29 -        Density of water layer (kg/m³)
+       30 -    rho2 : float
+       31 -        Density of sediment layer (kg/m³)
+       32 -    H : float
+       33 -        Depth of water layer (m)
+       34 -    z_s : float
+       35 -        Source depth (m), measured from surface (positive downward)
+       36 -    """
+       37 -
+       38 -    def __init__(self, omega: float, c1: float, c2: float,
+       39 -                 rho1: float, rho2: float, H: float, z_s: float):
+       40 -
+       41 -        if c2 <= c1:
+       42 -            raise ValueError("Pekeris waveguide requires c2 > c1 for trapped modes")
+       43 -        if z_s > H:
+       44 -            raise ValueError("Source depth must be within water layer (z_s <= H)")
+       45 -
+       46 -        self.omega = omega
+       47 -        self.c1 = c1
+       48 -        self.c2 = c2
+       49 -        self.rho1 = rho1
+       50 -        self.rho2 = rho2
+       51 -        self.H = H
+       52 -        self.z_s = z_s
+       53 -
+       54 -        # Wavenumbers
+       55 -        self.k1 = omega / c1  # wavenumber in water
+       56 -        self.k2 = omega / c2  # wavenumber in sediment
+       57 -        self.k1_sqrd = self.k1**2
+       58 -        self.k2_sqrd = self.k2**2
+       59 -
+       60 -        # Density ratio
+       61 -        self.M = rho2 / rho1
+       62 -
+       63 -        # Compute eigenvalues and mode properties
+       64 -        self._compute_modes()
+       65 -
+       66 -    def _eigenvalue_equation(self, kr_sqrd: float, n: int) -> float:
+       67 -        """
+       68 -        Eigenvalue equation for the n-th mode.
+       69 -
+       70 -        The discrete mode eigenvalues kr² satisfy:
+       71 -            k1z * H - atan(k2z / (M * k1z)) - (n - 0.5) * pi = 0
+       72 -
+       73 -        where:
+       74 -            k1z = sqrt(k1² - kr²)  (vertical wavenumber in water)
+       75 -            k2z = sqrt(kr² - k2²)  (vertical wavenumber in sediment)
+       76 -
+       77 -        Parameters
+       78 -        ----------
+       79 -        kr_sqrd : float
+       80 -            Horizontal wavenumber squared (eigenvalue candidate)
+       81 -        n : int
+       82 -            Mode number (1, 2, 3, ...)
+       83 -
+       84 -        Returns
+       85 -        -------
+       86 -        float
+       87 -            Residual of the eigenvalue equation
+       88 -        """
+       89 -        k1z = np.sqrt(self.k1_sqrd - kr_sqrd)
+       90 -        k2z = np.sqrt(kr_sqrd - self.k2_sqrd)
+       91 -
+       92 -        return k1z * self.H - np.arctan(k2z / (self.M * k1z)) - (n - 0.5) * np.pi
+       93 -
+       94 -    def _compute_modes(self):
+       95 -        """Compute all discrete mode eigenvalues and normalization constants."""
+       96 -
+       97 -        # Maximum number of modes (from Pekeris theory)
+       98 -        # n_max = floor(k1 * H * sqrt(1 - c1²/c2²) / pi + 0.5)
+       99 -        self.n_modes = int(self.k1 * self.H * np.sqrt(1 - (self.c1/self.c2)**2) / np.pi + 0.5)
+      100 -
+      101 -        if self.n_modes == 0:
+      102 -            self.eigenvalues = np.array([])
+      103 -            self.k_r = np.array([])
+      104 -            self.k1_z = np.array([])
+      105 -            self.k2_z = np.array([])
+      106 -            self.A_sqrd = np.array([])
+      107 -            return
+      108 -
+      109 -        # Search bounds for eigenvalues: k2² < kr² < k1²
+      110 -        kr_sqrd_lo = self.k2_sqrd + 1e-10
+      111 -        kr_sqrd_hi = self.k1_sqrd - 1e-10
+      112 -
+      113 -        eigenvalues = []
+      114 -        for n in range(1, self.n_modes + 1):
+      115 -            # Solve eigenvalue equation using Brent's method
+      116 -            kr_sqrd = brentq(self._eigenvalue_equation, kr_sqrd_lo, kr_sqrd_hi, args=(n,))
+      117 -            eigenvalues.append(kr_sqrd)
+      118 -
+      119 -        self.eigenvalues = np.array(eigenvalues)
+      120 -
+      121 -        # Compute derived quantities
+      122 -        self.k_r = np.sqrt(self.eigenvalues)      # horizontal wavenumber
+      123 -        self.k1_z = np.sqrt(self.k1_sqrd - self.eigenvalues)  # vertical wavenumber in water
+      124 -        self.k2_z = np.sqrt(self.eigenvalues - self.k2_sqrd)  # vertical wavenumber in sediment
+      125 -
+      126 -        # Mode normalization (amplitude squared)
+      127 -        # A² = 2 / [(1/ρ1) * (H - sin(2*k1z*H)/(2*k1z)) + (1/ρ2) * sin²(k1z*H) / k2z]
+      128 -        term1 = (1/self.rho1) * (self.H - np.sin(2*self.k1_z*self.H) / (2*self.k1_z))
+      129 -        term2 = (1/self.rho2) * np.sin(self.k1_z*self.H)**2 / self.k2_z
+      130 -        self.A_sqrd = 2.0 / (term1 + term2)
+      131 -
+      132 -    def pressure(self, r: float, z: float) -> complex:
+      133 -        """
+      134 -        Compute acoustic pressure at position (r, z).
+      135 -
+      136 -        Parameters
+      137 -        ----------
+      138 -        r : float
+      139 -            Radial distance from source (m)
+      140 -        z : float
+      141 -            Depth (m), positive downward from surface
+      142 -
+      143 -        Returns
+      144 -        -------
+      145 -        complex
+      146 -            Complex acoustic pressure
+      147 -        """
+      148 -        if self.n_modes == 0:
+      149 -            return 0j
+      150 -
+      151 -        p = 0j
+      152 -
+      153 -        # Hankel function of second kind: H0^(2)(x) = J0(x) - i*Y0(x)
+      154 -        def hankel2_0(x):
+      155 -            return jv(0, x) - 1j * yv(0, x)
+      156 -
+      157 -        if z <= self.H:
+      158 -            # In water layer
+      159 -            for n in range(self.n_modes):
+      160 -                modal_amp = self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) * np.sin(self.k1_z[n] * z)
+      161 -                p += modal_amp * hankel2_0(self.k_r[n] * r)
+      162 -        else:
+      163 -            # In sediment (exponential decay)
+      164 -            for n in range(self.n_modes):
+      165 -                modal_amp = (self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) *
+      166 -                            np.sin(self.k1_z[n] * self.H) * np.exp(self.k2_z[n] * (self.H - z)))
+      167 -                p += modal_amp * hankel2_0(self.k_r[n] * r)
+      168 -
+      169 -        # Scale factor (from normal mode theory)
+      170 -        p *= 1j * np.pi / self.rho1
+      171 -
+      172 -        # Conjugate for exp(+iωt) time convention
+      173 -        return np.conj(p)
+      174 -
+      175 -    def pressure_gradient(self, r: float, z: float) -> tuple[complex, complex]:
+      176 -        """
+      177 -        Compute pressure gradient at position (r, z).
+      178 -
+      179 -        Parameters
+      180 -        ----------
+      181 -        r : float
+      182 -            Radial distance from source (m)
+      183 -        z : float
+      184 -            Depth (m), positive downward from surface
+      185 -
+      186 -        Returns
+      187 -        -------
+      188 -        tuple[complex, complex]
+      189 -            (dp/dr, dp/dz) - complex pressure gradients
+      190 -        """
+      191 -        if self.n_modes == 0:
+      192 -            return 0j, 0j
+      193 -
+      194 -        grad_r = 0j
+      195 -        grad_z = 0j
+      196 -
+      197 -        # Hankel functions
+      198 -        def hankel2_0(x):
+      199 -            return jv(0, x) - 1j * yv(0, x)
+      200 -
+      201 -        def hankel2_1(x):
+      202 -            return jv(1, x) - 1j * yv(1, x)
+      203 -
+      204 -        if z <= self.H:
+      205 -            # In water layer
+      206 -            for n in range(self.n_modes):
+      207 -                sin_zs = np.sin(self.k1_z[n] * self.z_s)
+      208 -                sin_z = np.sin(self.k1_z[n] * z)
+      209 -                cos_z = np.cos(self.k1_z[n] * z)
+      210 -                H0 = hankel2_0(self.k_r[n] * r)
+      211 -                H1 = hankel2_1(self.k_r[n] * r)
+      212 -
+      213 -                # d/dr: derivative of H0^(2)(kr*r) is -kr * H1^(2)(kr*r)
+      214 -                grad_r += -self.k_r[n] * self.A_sqrd[n] * sin_zs * sin_z * H1
+      215 -
+      216 -                # d/dz: derivative of sin(k1z*z) is k1z * cos(k1z*z)
+      217 -                grad_z += self.k1_z[n] * self.A_sqrd[n] * sin_zs * cos_z * H0
+      218 -        else:
+      219 -            # In sediment
+      220 -            for n in range(self.n_modes):
+      221 -                sin_zs = np.sin(self.k1_z[n] * self.z_s)
+      222 -                sin_H = np.sin(self.k1_z[n] * self.H)
+      223 -                exp_decay = np.exp(self.k2_z[n] * (self.H - z))
+      224 -                H0 = hankel2_0(self.k_r[n] * r)
+      225 -                H1 = hankel2_1(self.k_r[n] * r)
+      226 -
+      227 -                modal_base = self.A_sqrd[n] * sin_zs * sin_H * exp_decay
+      228 -
+      229 -                grad_r += -self.k_r[n] * modal_base * H1
+      230 -
+      231 -                # d/dz of exp(k2z*(H-z)) is -k2z * exp(k2z*(H-z))
+      232 -                grad_z += -self.k2_z[n] * modal_base * H0
+      233 -
+      234 -        # Scale factor
+      235 -        scale = 1j * np.pi / self.rho1
+      236 -        grad_r *= scale
+      237 -        grad_z *= scale
+      238 -
+      239 -        # Conjugate for exp(+iωt) time convention
+      240 -        return np.conj(grad_r), np.conj(grad_z)
+      241 -
+      242 -    def pressure_field(self, r_array: np.ndarray, z_array: np.ndarray) -> np.ndarray:
+      243 -        """
+      244 -        Compute pressure field on a grid.
+      245 -
+      246 -        Parameters
+      247 -        ----------
+      248 -        r_array : np.ndarray
+      249 -            1D array of radial distances (m)
+      250 -        z_array : np.ndarray
+      251 -            1D array of depths (m)
+      252 -
+      253 -        Returns
+      254 -        -------
+      255 -        np.ndarray
+      256 -            2D complex array of pressure values, shape (len(z_array), len(r_array))
+      257 -        """
+      258 -        R, Z = np.meshgrid(r_array, z_array)
+      259 -        P = np.zeros_like(R, dtype=complex)
+      260 -
+      261 -        for i, z in enumerate(z_array):
+      262 -            for j, r in enumerate(r_array):
+      263 -                P[i, j] = self.pressure(r, z)
+      264 -
+      265 -        return P
+      266 -
+      267 -    def __repr__(self):
+      268 -        return (f"PekerisWaveguide(omega={self.omega}, c1={self.c1}, c2={self.c2}, "
+      269 -                f"rho1={self.rho1}, rho2={self.rho2}, H={self.H}, z_s={self.z_s}, "
+      270 -                f"n_modes={self.n_modes})")
+      271 -
+      272 -
+      273 -def example(show_plot=True):
+      274 -    """Run an example calculation matching the Fortran test case."""
+      275 -
+      276 -    # Example parameters (from commented main() in pekeris.c)
+      277 -    omega = 200.0       # rad/s
+      278 -    c1 = 1500.0         # m/s (water)
+      279 -    c2 = 1800.0         # m/s (sediment)
+      280 -    rho1 = 1000.0       # kg/m³ (water)
+      281 -    rho2 = 1800.0       # kg/m³ (sediment)
+      282 -    H = 150.0           # m (water depth)
+      283 -    z_s = 30.0          # m (source depth)
+      284 -
+      285 -    # Create waveguide
+      286 -    wg = PekerisWaveguide(omega, c1, c2, rho1, rho2, H, z_s)
+      287 -
+      288 -    print(f"Pekeris Waveguide Parameters:")
+      289 -    print(f"  omega = {omega} rad/s (f = {omega/(2*np.pi):.2f} Hz)")
+      290 -    print(f"  c1 = {c1} m/s, c2 = {c2} m/s")
+      291 -    print(f"  rho1 = {rho1} kg/m³, rho2 = {rho2} kg/m³")
+      292 -    print(f"  H = {H} m, z_s = {z_s} m")
+      293 -    print(f"\nNumber of discrete modes: {wg.n_modes}")
+      294 -    print(f"\nEigenvalues (kr²):")
+      295 -    for i, ev in enumerate(wg.eigenvalues):
+      296 -        print(f"  Mode {i+1}: kr² = {ev:.10f}, kr = {np.sqrt(ev):.10f}")
+      297 -
+      298 -    # Compute pressure at a test point
+      299 -    r_test = 100.0  # m
+      300 -    z_test = 50.0   # m
+      301 -    p = wg.pressure(r_test, z_test)
+      302 -    grad_r, grad_z = wg.pressure_gradient(r_test, z_test)
+      303 -
+      304 -    print(f"\nPressure at (r={r_test}, z={z_test}):")
+      305 -    print(f"  p = {p}")
+      306 -    print(f"  |p| = {np.abs(p)}")
+      307 -    print(f"  dp/dr = {grad_r}")
+      308 -    print(f"  dp/dz = {grad_z}")
+      309 -
+      310 -    if show_plot:
+      311 -        plot_field(wg)
+      312 -
+      313 -    return wg
+      314 -
+      315 -
+      316 -def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
+      317 -               nr: int = 200, nz: int = 100, r_min: float = 1.0, save_only: bool = False):
+      318 -    """
+      319 -    Plot the pressure field magnitude and phase.
+      320 -
+      321 -    Parameters
+      322 -    ----------
+      323 -    wg : PekerisWaveguide
+      324 -        Waveguide instance
+      325 -    r_max : float
+      326 -        Maximum range (m)
+      327 -    z_max : float
+      328 -        Maximum depth (m), defaults to 1.5 * H to show some sediment
+      329 -    nr : int
+      330 -        Number of range points
+      331 -    nz : int
+      332 -        Number of depth points
+      333 -    r_min : float
+      334 -        Minimum range (m), avoid r=0 singularity
+      335 -    save_only : bool
+      336 -        If True, only save to file without displaying (for headless environments)
+      337 -    """
+      338 -    import matplotlib
+      339 -    if save_only:
+      340 -        matplotlib.use('Agg')
+      341 -    import matplotlib.pyplot as plt
+      342 -
+      343 -    if z_max is None:
+      344 -        z_max = 1.5 * wg.H
+      345 -
+      346 -    # Create grid
+      347 -    r_array = np.linspace(r_min, r_max, nr)
+      348 -    z_array = np.linspace(0, z_max, nz)
+      349 -
+      350 -    print(f"\nComputing pressure field on {nr}x{nz} grid...")
+      351 -    P = wg.pressure_field(r_array, z_array)
+      352 -
+      353 -    # Compute transmission loss: TL = -20*log10(|p| * r) relative to 1m
+      354 -    # For display, use magnitude in dB relative to max
+      355 -    P_abs = np.abs(P)
+      356 -    P_db = 20 * np.log10(P_abs / P_abs.max() + 1e-20)
+      357 -
+      358 -    # Create figure with two subplots
+      359 -    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+      360 -
+      361 -    # Plot 1: Magnitude (dB)
+      362 -    ax1 = axes[0]
+      363 -    im1 = ax1.pcolormesh(r_array, z_array, P_db, shading='auto', cmap='viridis', vmin=-40, vmax=0)
+      364 -    ax1.axhline(wg.H, color='white', linestyle='--', linewidth=1, label='Seafloor')
+      365 -    ax1.axhline(wg.z_s, color='red', linestyle=':', linewidth=1, label=f'Source (z={wg.z_s}m)')
+      366 -    ax1.set_ylabel('Depth (m)')
+      367 -    ax1.set_title(f'Pressure Magnitude (dB re max) - {wg.n_modes} discrete modes')
+      368 -    ax1.invert_yaxis()
+      369 -    ax1.legend(loc='lower right')
+      370 -    cbar1 = fig.colorbar(im1, ax=ax1, label='dB')
+      371 -
+      372 -    # Plot 2: Real part (shows interference pattern)
+      373 -    ax2 = axes[1]
+      374 -    P_real = np.real(P)
+      375 -    vlim = np.max(np.abs(P_real)) * 0.5
+      376 -    im2 = ax2.pcolormesh(r_array, z_array, P_real, shading='auto', cmap='RdBu_r', vmin=-vlim, vmax=vlim)
+      377 -    ax2.axhline(wg.H, color='black', linestyle='--', linewidth=1)
+      378 -    ax2.axhline(wg.z_s, color='red', linestyle=':', linewidth=1)
+      379 -    ax2.set_xlabel('Range (m)')
+      380 -    ax2.set_ylabel('Depth (m)')
+      381 -    ax2.set_title('Pressure (Real part) - showing interference pattern')
+      382 -    ax2.invert_yaxis()
+      383 -    cbar2 = fig.colorbar(im2, ax=ax2, label='Re(p)')
+      384 -
+      385 -    plt.suptitle(f'Pekeris Waveguide: f={wg.omega/(2*np.pi):.1f} Hz, H={wg.H}m, '
+      386 -                 f'c₁={wg.c1} m/s, c₂={wg.c2} m/s', fontsize=12)
+      387 -    plt.tight_layout()
+      388 -    plt.savefig('pekeris_field.png', dpi=150)
+      389 -    print("Saved figure to pekeris_field.png")
+      390 -    if not save_only:
+      391 -        plt.show()
+      392 -
+      393 -
+      394 -if __name__ == "__main__":
+      395 -    example()
+        1 +"""
+        2 +Pekeris waveguide exact solution.
+        3 +
+        4 +This module computes the acoustic pressure field in a two-layer Pekeris waveguide:
+        5 +- Layer 1 (water): constant sound speed c1, density rho1, depth H
+        6 +- Layer 2 (sediment): constant sound speed c2 > c1, density rho2, semi-infinite
+        7 +
+        8 +The solution includes both discrete (trapped) modes and the continuous spectrum.
+        9 +"""
+       10 +
+       11 +import numpy as np
+       12 +from scipy.optimize import brentq
+       13 +from scipy.special import jv, yv, kv  # Bessel functions J_n, Y_n, K_n
+       14 +from scipy.integrate import quad
+       15 +
+       16 +
+       17 +class PekerisWaveguide:
+       18 +    """
+       19 +    Pekeris waveguide solver.
+       20 +
+       21 +    Parameters
+       22 +    ----------
+       23 +    omega : float
+       24 +        Angular frequency (rad/s)
+       25 +    c1 : float
+       26 +        Sound speed in water layer (m/s)
+       27 +    c2 : float
+       28 +        Sound speed in sediment layer (m/s), must be > c1
+       29 +    rho1 : float
+       30 +        Density of water layer (kg/m³)
+       31 +    rho2 : float
+       32 +        Density of sediment layer (kg/m³)
+       33 +    H : float
+       34 +        Depth of water layer (m)
+       35 +    z_s : float
+       36 +        Source depth (m), measured from surface (positive downward)
+       37 +    discrete_modes_only : bool
+       38 +        If True, only compute discrete modes (faster but incomplete).
+       39 +        If False (default), include continuous spectrum contribution.
+       40 +    quadrature_rtol : float
+       41 +        Relative tolerance for continuous spectrum integration (default 1e-7)
+       42 +    """
+       43 +
+       44 +    def __init__(self, omega: float, c1: float, c2: float,
+       45 +                 rho1: float, rho2: float, H: float, z_s: float,
+       46 +                 discrete_modes_only: bool = False,
+       47 +                 quadrature_rtol: float = 1e-7):
+       48 +
+       49 +        if c2 <= c1:
+       50 +            raise ValueError("Pekeris waveguide requires c2 > c1 for trapped modes")
+       51 +        if z_s > H:
+       52 +            raise ValueError("Source depth must be within water layer (z_s <= H)")
+       53 +
+       54 +        self.omega = omega
+       55 +        self.c1 = c1
+       56 +        self.c2 = c2
+       57 +        self.rho1 = rho1
+       58 +        self.rho2 = rho2
+       59 +        self.H = H
+       60 +        self.z_s = z_s
+       61 +        self.discrete_modes_only = discrete_modes_only
+       62 +        self.quadrature_rtol = quadrature_rtol
+       63 +
+       64 +        # Wavenumbers
+       65 +        self.k1 = omega / c1  # wavenumber in water
+       66 +        self.k2 = omega / c2  # wavenumber in sediment
+       67 +        self.k1_sqrd = self.k1**2
+       68 +        self.k2_sqrd = self.k2**2
+       69 +
+       70 +        # Density ratio
+       71 +        self.M = rho2 / rho1
+       72 +
+       73 +        # Branch point for continuous spectrum (where k_r = k2)
+       74 +        self.branch_start = np.sqrt(self.k1_sqrd - self.k2_sqrd)
+       75 +
+       76 +        # Compute eigenvalues and mode properties
+       77 +        self._compute_modes()
+       78 +
+       79 +    def _eigenvalue_equation(self, kr_sqrd: float, n: int) -> float:
+       80 +        """
+       81 +        Eigenvalue equation for the n-th mode.
+       82 +
+       83 +        The discrete mode eigenvalues kr² satisfy:
+       84 +            k1z * H - atan(k2z / (M * k1z)) - (n - 0.5) * pi = 0
+       85 +
+       86 +        where:
+       87 +            k1z = sqrt(k1² - kr²)  (vertical wavenumber in water)
+       88 +            k2z = sqrt(kr² - k2²)  (vertical wavenumber in sediment)
+       89 +
+       90 +        Parameters
+       91 +        ----------
+       92 +        kr_sqrd : float
+       93 +            Horizontal wavenumber squared (eigenvalue candidate)
+       94 +        n : int
+       95 +            Mode number (1, 2, 3, ...)
+       96 +
+       97 +        Returns
+       98 +        -------
+       99 +        float
+      100 +            Residual of the eigenvalue equation
+      101 +        """
+      102 +        k1z = np.sqrt(self.k1_sqrd - kr_sqrd)
+      103 +        k2z = np.sqrt(kr_sqrd - self.k2_sqrd)
+      104 +
+      105 +        return k1z * self.H - np.arctan(k2z / (self.M * k1z)) - (n - 0.5) * np.pi
+      106 +
+      107 +    def _compute_modes(self):
+      108 +        """Compute all discrete mode eigenvalues and normalization constants."""
+      109 +
+      110 +        # Maximum number of modes (from Pekeris theory)
+      111 +        # n_max = floor(k1 * H * sqrt(1 - c1²/c2²) / pi + 0.5)
+      112 +        self.n_modes = int(self.k1 * self.H * np.sqrt(1 - (self.c1/self.c2)**2) / np.pi + 0.5)
+      113 +
+      114 +        if self.n_modes == 0:
+      115 +            self.eigenvalues = np.array([])
+      116 +            self.k_r = np.array([])
+      117 +            self.k1_z = np.array([])
+      118 +            self.k2_z = np.array([])
+      119 +            self.A_sqrd = np.array([])
+      120 +            return
+      121 +
+      122 +        # Search bounds for eigenvalues: k2² < kr² < k1²
+      123 +        kr_sqrd_lo = self.k2_sqrd + 1e-10
+      124 +        kr_sqrd_hi = self.k1_sqrd - 1e-10
+      125 +
+      126 +        eigenvalues = []
+      127 +        for n in range(1, self.n_modes + 1):
+      128 +            # Solve eigenvalue equation using Brent's method
+      129 +            kr_sqrd = brentq(self._eigenvalue_equation, kr_sqrd_lo, kr_sqrd_hi, args=(n,))
+      130 +            eigenvalues.append(kr_sqrd)
+      131 +
+      132 +        self.eigenvalues = np.array(eigenvalues)
+      133 +
+      134 +        # Compute derived quantities
+      135 +        self.k_r = np.sqrt(self.eigenvalues)      # horizontal wavenumber
+      136 +        self.k1_z = np.sqrt(self.k1_sqrd - self.eigenvalues)  # vertical wavenumber in water
+      137 +        self.k2_z = np.sqrt(self.eigenvalues - self.k2_sqrd)  # vertical wavenumber in sediment
+      138 +
+      139 +        # Mode normalization (amplitude squared)
+      140 +        # A² = 2 / [(1/ρ1) * (H - sin(2*k1z*H)/(2*k1z)) + (1/ρ2) * sin²(k1z*H) / k2z]
+      141 +        term1 = (1/self.rho1) * (self.H - np.sin(2*self.k1_z*self.H) / (2*self.k1_z))
+      142 +        term2 = (1/self.rho2) * np.sin(self.k1_z*self.H)**2 / self.k2_z
+      143 +        self.A_sqrd = 2.0 / (term1 + term2)
+      144 +
+      145 +    # -------------------------------------------------------------------------
+      146 +    # Continuous spectrum integrand functions
+      147 +    # The integration variable x is the vertical wavenumber in the water layer (k1_z)
+      148 +    # -------------------------------------------------------------------------
+      149 +
+      150 +    def _cont_spectrum_denominator(self, x: float) -> float:
+      151 +        """Common denominator for continuous spectrum integrands."""
+      152 +        # k_r² = k1² - x² (for definite region) or x² - k1² (for indefinite)
+      153 +        # k2_z² = k2² - k_r² = k2² - k1² + x²
+      154 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      155 +        sin_sqrd = np.sin(x * self.H)**2
+      156 +        ratio = (self.M * x / k2_z)**2
+      157 +        return ratio + (1 - ratio) * sin_sqrd
+      158 +
+      159 +    def _integrand_definite_real(self, x: float, r: float, z: float) -> float:
+      160 +        """Real part integrand for definite region [branch_start, k1] using J0."""
+      161 +        k_r = np.sqrt(self.k1_sqrd - x**2)
+      162 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      163 +        denom = self._cont_spectrum_denominator(x)
+      164 +        return jv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+      165 +
+      166 +    def _integrand_definite_imag(self, x: float, r: float, z: float) -> float:
+      167 +        """Imaginary part integrand for definite region [branch_start, k1] using Y0."""
+      168 +        k_r = np.sqrt(self.k1_sqrd - x**2)
+      169 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      170 +        denom = self._cont_spectrum_denominator(x)
+      171 +        return yv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+      172 +
+      173 +    def _integrand_indefinite(self, x: float, r: float, z: float) -> float:
+      174 +        """Integrand for indefinite region [k1, cutoff] using K0."""
+      175 +        # In this region, k_r is imaginary: k_r = i * sqrt(x² - k1²)
+      176 +        # So we use K0 which is related to H0^(2) for imaginary argument
+      177 +        k_r_mag = np.sqrt(x**2 - self.k1_sqrd)  # magnitude of imaginary k_r
+      178 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      179 +        denom = self._cont_spectrum_denominator(x)
+      180 +        # Factor of -2/pi comes from K0(x) = -pi/2 * i * H0^(2)(ix) relationship
+      181 +        return -(2/np.pi) * kv(0, k_r_mag * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+      182 +
+      183 +    def _integrand_definite_real_dr(self, x: float, r: float, z: float) -> float:
+      184 +        """d/dr of real part integrand for definite region."""
+      185 +        k_r = np.sqrt(self.k1_sqrd - x**2)
+      186 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      187 +        denom = self._cont_spectrum_denominator(x)
+      188 +        # d/dr of J0(k_r * r) = -k_r * J1(k_r * r)
+      189 +        return -k_r * jv(1, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+      190 +
+      191 +    def _integrand_definite_imag_dr(self, x: float, r: float, z: float) -> float:
+      192 +        """d/dr of imaginary part integrand for definite region."""
+      193 +        k_r = np.sqrt(self.k1_sqrd - x**2)
+      194 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      195 +        denom = self._cont_spectrum_denominator(x)
+      196 +        return -k_r * yv(1, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+      197 +
+      198 +    def _integrand_indefinite_dr(self, x: float, r: float, z: float) -> float:
+      199 +        """d/dr of integrand for indefinite region."""
+      200 +        k_r_mag = np.sqrt(x**2 - self.k1_sqrd)
+      201 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      202 +        denom = self._cont_spectrum_denominator(x)
+      203 +        # d/dr of K0(k_r_mag * r) = -k_r_mag * K1(k_r_mag * r)
+      204 +        return (2/np.pi) * k_r_mag * kv(1, k_r_mag * r) * (x / k2_z) * np.sin(x * self.z_s) * np.sin(x * z) / denom
+      205 +
+      206 +    def _integrand_definite_real_dz(self, x: float, r: float, z: float) -> float:
+      207 +        """d/dz of real part integrand for definite region."""
+      208 +        k_r = np.sqrt(self.k1_sqrd - x**2)
+      209 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      210 +        denom = self._cont_spectrum_denominator(x)
+      211 +        return x * jv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.cos(x * z) / denom
+      212 +
+      213 +    def _integrand_definite_imag_dz(self, x: float, r: float, z: float) -> float:
+      214 +        """d/dz of imaginary part integrand for definite region."""
+      215 +        k_r = np.sqrt(self.k1_sqrd - x**2)
+      216 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      217 +        denom = self._cont_spectrum_denominator(x)
+      218 +        return x * yv(0, k_r * r) * (x / k2_z) * np.sin(x * self.z_s) * np.cos(x * z) / denom
+      219 +
+      220 +    def _integrand_indefinite_dz(self, x: float, r: float, z: float) -> float:
+      221 +        """d/dz of integrand for indefinite region."""
+      222 +        k_r_mag = np.sqrt(x**2 - self.k1_sqrd)
+      223 +        k2_z = np.sqrt(self.k2_sqrd - self.k1_sqrd + x**2)
+      224 +        denom = self._cont_spectrum_denominator(x)
+      225 +        return -(2/np.pi) * x * kv(0, k_r_mag * r) * (x / k2_z) * np.sin(x * self.z_s) * np.cos(x * z) / denom
+      226 +
+      227 +    def _continuous_spectrum_pressure(self, r: float, z: float) -> complex:
+      228 +        """
+      229 +        Compute the continuous spectrum contribution to pressure.
+      230 +
+      231 +        The continuous spectrum integral is split into two parts:
+      232 +        1. Definite region: [branch_start, k1] - oscillatory in water layer
+      233 +        2. Indefinite region: [k1, cutoff] - evanescent in water layer
+      234 +        """
+      235 +        # Definite region integrals
+      236 +        int_real, _ = quad(self._integrand_definite_real, self.branch_start, self.k1,
+      237 +                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      238 +        int_imag, _ = quad(self._integrand_definite_imag, self.branch_start, self.k1,
+      239 +                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      240 +
+      241 +        # Indefinite region integral (evanescent)
+      242 +        # Cutoff chosen so that K0 argument is large enough for negligible contribution
+      243 +        cutoff = np.sqrt((100.0 / r)**2 + self.k1_sqrd)
+      244 +        int_indef, _ = quad(self._integrand_indefinite, self.k1, cutoff,
+      245 +                           args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      246 +
+      247 +        # Combine: the indefinite integral contributes to imaginary part
+      248 +        integral = complex(int_real, int_imag + int_indef)
+      249 +
+      250 +        # Scale factor and phase adjustment (matching Fortran)
+      251 +        # The factor 2*M comes from the residue calculation
+      252 +        return 2 * self.M * complex(-integral.imag, integral.real)
+      253 +
+      254 +    def _continuous_spectrum_gradient(self, r: float, z: float) -> tuple[complex, complex]:
+      255 +        """
+      256 +        Compute the continuous spectrum contribution to pressure gradient.
+      257 +        """
+      258 +        # d/dr integrals
+      259 +        int_real_dr, _ = quad(self._integrand_definite_real_dr, self.branch_start, self.k1,
+      260 +                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      261 +        int_imag_dr, _ = quad(self._integrand_definite_imag_dr, self.branch_start, self.k1,
+      262 +                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      263 +        cutoff = np.sqrt((100.0 / r)**2 + self.k1_sqrd)
+      264 +        int_indef_dr, _ = quad(self._integrand_indefinite_dr, self.k1, cutoff,
+      265 +                              args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      266 +
+      267 +        integral_dr = complex(int_real_dr, int_imag_dr + int_indef_dr)
+      268 +        grad_r = 2 * self.M * complex(-integral_dr.imag, integral_dr.real)
+      269 +
+      270 +        # d/dz integrals
+      271 +        int_real_dz, _ = quad(self._integrand_definite_real_dz, self.branch_start, self.k1,
+      272 +                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      273 +        int_imag_dz, _ = quad(self._integrand_definite_imag_dz, self.branch_start, self.k1,
+      274 +                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      275 +        int_indef_dz, _ = quad(self._integrand_indefinite_dz, self.k1, cutoff,
+      276 +                              args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+      277 +
+      278 +        integral_dz = complex(int_real_dz, int_imag_dz + int_indef_dz)
+      279 +        grad_z = 2 * self.M * complex(-integral_dz.imag, integral_dz.real)
+      280 +
+      281 +        return grad_r, grad_z
+      282 +
+      283 +    def _discrete_modes_pressure(self, r: float, z: float) -> complex:
+      284 +        """Compute discrete modes contribution to pressure."""
+      285 +        if self.n_modes == 0:
+      286 +            return 0j
+      287 +
+      288 +        p = 0j
+      289 +
+      290 +        def hankel2_0(x):
+      291 +            return jv(0, x) - 1j * yv(0, x)
+      292 +
+      293 +        if z <= self.H:
+      294 +            for n in range(self.n_modes):
+      295 +                modal_amp = self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) * np.sin(self.k1_z[n] * z)
+      296 +                p += modal_amp * hankel2_0(self.k_r[n] * r)
+      297 +        else:
+      298 +            for n in range(self.n_modes):
+      299 +                modal_amp = (self.A_sqrd[n] * np.sin(self.k1_z[n] * self.z_s) *
+      300 +                            np.sin(self.k1_z[n] * self.H) * np.exp(self.k2_z[n] * (self.H - z)))
+      301 +                p += modal_amp * hankel2_0(self.k_r[n] * r)
+      302 +
+      303 +        # Scale and phase adjustment
+      304 +        return complex(-p.imag, p.real) * np.pi / self.rho1
+      305 +
+      306 +    def _discrete_modes_gradient(self, r: float, z: float) -> tuple[complex, complex]:
+      307 +        """Compute discrete modes contribution to pressure gradient."""
+      308 +        if self.n_modes == 0:
+      309 +            return 0j, 0j
+      310 +
+      311 +        grad_r = 0j
+      312 +        grad_z = 0j
+      313 +
+      314 +        def hankel2_0(x):
+      315 +            return jv(0, x) - 1j * yv(0, x)
+      316 +
+      317 +        def hankel2_1(x):
+      318 +            return jv(1, x) - 1j * yv(1, x)
+      319 +
+      320 +        if z <= self.H:
+      321 +            for n in range(self.n_modes):
+      322 +                sin_zs = np.sin(self.k1_z[n] * self.z_s)
+      323 +                sin_z = np.sin(self.k1_z[n] * z)
+      324 +                cos_z = np.cos(self.k1_z[n] * z)
+      325 +                H0 = hankel2_0(self.k_r[n] * r)
+      326 +                H1 = hankel2_1(self.k_r[n] * r)
+      327 +
+      328 +                grad_r += -self.k_r[n] * self.A_sqrd[n] * sin_zs * sin_z * H1
+      329 +                grad_z += self.k1_z[n] * self.A_sqrd[n] * sin_zs * cos_z * H0
+      330 +        else:
+      331 +            for n in range(self.n_modes):
+      332 +                sin_zs = np.sin(self.k1_z[n] * self.z_s)
+      333 +                sin_H = np.sin(self.k1_z[n] * self.H)
+      334 +                exp_decay = np.exp(self.k2_z[n] * (self.H - z))
+      335 +                H0 = hankel2_0(self.k_r[n] * r)
+      336 +                H1 = hankel2_1(self.k_r[n] * r)
+      337 +
+      338 +                modal_base = self.A_sqrd[n] * sin_zs * sin_H * exp_decay
+      339 +                grad_r += -self.k_r[n] * modal_base * H1
+      340 +                grad_z += -self.k2_z[n] * modal_base * H0
+      341 +
+      342 +        scale = 1j * np.pi / self.rho1
+      343 +        return grad_r * scale, grad_z * scale
+      344 +
+      345 +    def pressure(self, r: float, z: float) -> complex:
+      346 +        """
+      347 +        Compute acoustic pressure at position (r, z).
+      348 +
+      349 +        Parameters
+      350 +        ----------
+      351 +        r : float
+      352 +            Radial distance from source (m)
+      353 +        z : float
+      354 +            Depth (m), positive downward from surface
+      355 +
+      356 +        Returns
+      357 +        -------
+      358 +        complex
+      359 +            Complex acoustic pressure
+      360 +        """
+      361 +        # Discrete modes contribution
+      362 +        p = self._discrete_modes_pressure(r, z)
+      363 +
+      364 +        # Add continuous spectrum if requested
+      365 +        if not self.discrete_modes_only and z <= self.H:
+      366 +            p += self._continuous_spectrum_pressure(r, z)
+      367 +
+      368 +        # Conjugate for exp(+iωt) time convention
+      369 +        return np.conj(p)
+      370 +
+      371 +    def pressure_gradient(self, r: float, z: float) -> tuple[complex, complex]:
+      372 +        """
+      373 +        Compute pressure gradient at position (r, z).
+      374 +
+      375 +        Parameters
+      376 +        ----------
+      377 +        r : float
+      378 +            Radial distance from source (m)
+      379 +        z : float
+      380 +            Depth (m), positive downward from surface
+      381 +
+      382 +        Returns
+      383 +        -------
+      384 +        tuple[complex, complex]
+      385 +            (dp/dr, dp/dz) - complex pressure gradients
+      386 +        """
+      387 +        # Discrete modes contribution
+      388 +        grad_r, grad_z = self._discrete_modes_gradient(r, z)
+      389 +
+      390 +        # Add continuous spectrum if requested
+      391 +        if not self.discrete_modes_only and z <= self.H:
+      392 +            cont_r, cont_z = self._continuous_spectrum_gradient(r, z)
+      393 +            grad_r += cont_r
+      394 +            grad_z += cont_z
+      395 +
+      396 +        # Correct for z convention and conjugate for exp(+iωt)
+      397 +        return np.conj(grad_r), np.conj(-grad_z)
+      398 +
+      399 +    def pressure_field(self, r_array: np.ndarray, z_array: np.ndarray,
+      400 +                      show_progress: bool = True) -> np.ndarray:
+      401 +        """
+      402 +        Compute pressure field on a grid.
+      403 +
+      404 +        Parameters
+      405 +        ----------
+      406 +        r_array : np.ndarray
+      407 +            1D array of radial distances (m)
+      408 +        z_array : np.ndarray
+      409 +            1D array of depths (m)
+      410 +        show_progress : bool
+      411 +            Print progress indicator (useful when including continuous spectrum)
+      412 +
+      413 +        Returns
+      414 +        -------
+      415 +        np.ndarray
+      416 +            2D complex array of pressure values, shape (len(z_array), len(r_array))
+      417 +        """
+      418 +        P = np.zeros((len(z_array), len(r_array)), dtype=complex)
+      419 +
+      420 +        total = len(z_array) * len(r_array)
+      421 +        for i, z in enumerate(z_array):
+      422 +            for j, r in enumerate(r_array):
+      423 +                P[i, j] = self.pressure(r, z)
+      424 +            if show_progress and (i + 1) % 10 == 0:
+      425 +                print(f"  Progress: {(i+1)*len(r_array)}/{total} points")
+      426 +
+      427 +        return P
+      428 +
+      429 +    def __repr__(self):
+      430 +        mode_str = "discrete only" if self.discrete_modes_only else "discrete + continuous"
+      431 +        return (f"PekerisWaveguide(omega={self.omega}, c1={self.c1}, c2={self.c2}, "
+      432 +                f"rho1={self.rho1}, rho2={self.rho2}, H={self.H}, z_s={self.z_s}, "
+      433 +                f"n_modes={self.n_modes}, mode={mode_str})")
+      434 +
+      435 +
+      436 +def example(show_plot=True, discrete_only=False):
+      437 +    """Run an example calculation matching the Fortran test case."""
+      438 +
+      439 +    # Example parameters (from commented main() in pekeris.c)
+      440 +    omega = 200.0       # rad/s
+      441 +    c1 = 1500.0         # m/s (water)
+      442 +    c2 = 1800.0         # m/s (sediment)
+      443 +    rho1 = 1000.0       # kg/m³ (water)
+      444 +    rho2 = 1800.0       # kg/m³ (sediment)
+      445 +    H = 150.0           # m (water depth)
+      446 +    z_s = 30.0          # m (source depth)
+      447 +
+      448 +    # Create waveguide
+      449 +    wg = PekerisWaveguide(omega, c1, c2, rho1, rho2, H, z_s,
+      450 +                          discrete_modes_only=discrete_only)
+      451 +
+      452 +    print(f"Pekeris Waveguide Parameters:")
+      453 +    print(f"  omega = {omega} rad/s (f = {omega/(2*np.pi):.2f} Hz)")
+      454 +    print(f"  c1 = {c1} m/s, c2 = {c2} m/s")
+      455 +    print(f"  rho1 = {rho1} kg/m³, rho2 = {rho2} kg/m³")
+      456 +    print(f"  H = {H} m, z_s = {z_s} m")
+      457 +    print(f"\nNumber of discrete modes: {wg.n_modes}")
+      458 +    print(f"Continuous spectrum: {'disabled' if discrete_only else 'enabled'}")
+      459 +    print(f"\nEigenvalues (kr²):")
+      460 +    for i, ev in enumerate(wg.eigenvalues):
+      461 +        print(f"  Mode {i+1}: kr² = {ev:.10f}, kr = {np.sqrt(ev):.10f}")
+      462 +
+      463 +    # Compute pressure at a test point
+      464 +    r_test = 100.0  # m
+      465 +    z_test = 50.0   # m
+      466 +    p = wg.pressure(r_test, z_test)
+      467 +    grad_r, grad_z = wg.pressure_gradient(r_test, z_test)
+      468 +
+      469 +    print(f"\nPressure at (r={r_test}, z={z_test}):")
+      470 +    print(f"  p = {p}")
+      471 +    print(f"  |p| = {np.abs(p)}")
+      472 +    print(f"  dp/dr = {grad_r}")
+      473 +    print(f"  dp/dz = {grad_z}")
+      474 +
+      475 +    if show_plot:
+      476 +        plot_field(wg)
+      477 +
+      478 +    return wg
+      479 +
+      480 +
+      481 +def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
+      482 +               nr: int = 200, nz: int = 100, r_min: float = 1.0, save_only: bool = False):
+      483 +    """
+      484 +    Plot the pressure field magnitude and phase.
+      485 +
+      486 +    Parameters
+      487 +    ----------
+      488 +    wg : PekerisWaveguide
+      489 +        Waveguide instance
+      490 +    r_max : float
+      491 +        Maximum range (m)
+      492 +    z_max : float
+      493 +        Maximum depth (m), defaults to 1.5 * H to show some sediment
+      494 +    nr : int
+      495 +        Number of range points
+      496 +    nz : int
+      497 +        Number of depth points
+      498 +    r_min : float
+      499 +        Minimum range (m), avoid r=0 singularity
+      500 +    save_only : bool
+      501 +        If True, only save to file without displaying (for headless environments)
+      502 +    """
+      503 +    import matplotlib
+      504 +    if save_only:
+      505 +        matplotlib.use('Agg')
+      506 +    import matplotlib.pyplot as plt
+      507 +
+      508 +    if z_max is None:
+      509 +        z_max = 1.5 * wg.H
+      510 +
+      511 +    # Create grid
+      512 +    r_array = np.linspace(r_min, r_max, nr)
+      513 +    z_array = np.linspace(0, z_max, nz)
+      514 +
+      515 +    mode_str = "discrete only" if wg.discrete_modes_only else "discrete + continuous"
+      516 +    print(f"\nComputing pressure field on {nr}x{nz} grid ({mode_str})...")
+      517 +    P = wg.pressure_field(r_array, z_array)
+      518 +
+      519 +    # Compute transmission loss: TL = -20*log10(|p| * r) relative to 1m
+      520 +    # For display, use magnitude in dB relative to max
+      521 +    P_abs = np.abs(P)
+      522 +    P_db = 20 * np.log10(P_abs / P_abs.max() + 1e-20)
+      523 +
+      524 +    # Create figure with two subplots
+      525 +    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+      526 +
+      527 +    # Plot 1: Magnitude (dB)
+      528 +    ax1 = axes[0]
+      529 +    im1 = ax1.pcolormesh(r_array, z_array, P_db, shading='auto', cmap='viridis', vmin=-40, vmax=0)
+      530 +    ax1.axhline(wg.H, color='white', linestyle='--', linewidth=1, label='Seafloor')
+      531 +    ax1.axhline(wg.z_s, color='red', linestyle=':', linewidth=1, label=f'Source (z={wg.z_s}m)')
+      532 +    ax1.set_ylabel('Depth (m)')
+      533 +    ax1.set_title(f'Pressure Magnitude (dB re max) - {wg.n_modes} modes ({mode_str})')
+      534 +    ax1.invert_yaxis()
+      535 +    ax1.legend(loc='lower right')
+      536 +    cbar1 = fig.colorbar(im1, ax=ax1, label='dB')
+      537 +
+      538 +    # Plot 2: Real part (shows interference pattern)
+      539 +    ax2 = axes[1]
+      540 +    P_real = np.real(P)
+      541 +    vlim = np.max(np.abs(P_real)) * 0.5
+      542 +    im2 = ax2.pcolormesh(r_array, z_array, P_real, shading='auto', cmap='RdBu_r', vmin=-vlim, vmax=vlim)
+      543 +    ax2.axhline(wg.H, color='black', linestyle='--', linewidth=1)
+      544 +    ax2.axhline(wg.z_s, color='red', linestyle=':', linewidth=1)
+      545 +    ax2.set_xlabel('Range (m)')
+      546 +    ax2.set_ylabel('Depth (m)')
+      547 +    ax2.set_title('Pressure (Real part) - showing interference pattern')
+      548 +    ax2.invert_yaxis()
+      549 +    cbar2 = fig.colorbar(im2, ax=ax2, label='Re(p)')
+      550 +
+      551 +    plt.suptitle(f'Pekeris Waveguide: f={wg.omega/(2*np.pi):.1f} Hz, H={wg.H}m, '
+      552 +                 f'c₁={wg.c1} m/s, c₂={wg.c2} m/s', fontsize=12)
+      553 +    plt.tight_layout()
+      554 +    filename = 'pekeris_field.png'
+      555 +    plt.savefig(filename, dpi=150)
+      556 +    print(f"Saved figure to {filename}")
+      557 +    if not save_only:
+      558 +        plt.show()
+      559 +
+      560 +
+      561 +if __name__ == "__main__":
+      562 +    import argparse
+      563 +    parser = argparse.ArgumentParser(description='Pekeris waveguide solver')
+      564 +    parser.add_argument('--discrete-only', action='store_true',
+      565 +                       help='Use discrete modes only (skip continuous spectrum)')
+      566 +    parser.add_argument('--no-plot', action='store_true',
+      567 +                       help='Skip plotting')
+      568 +    args = parser.parse_args()
+      569 +
+      570 +    example(show_plot=not args.no_plot, discrete_only=args.discrete_only)
+
+● The continuous spectrum has been added. Here's a summary of the changes:
+
+  New features:
+  1. discrete_modes_only parameter (default False) - set to True for faster computation without continuous spectrum
+  2. quadrature_rtol parameter to control integration tolerance
+  3. Command-line arguments: --discrete-only and --no-plot
+
+  Continuous spectrum implementation:
+  - Integration split into two regions:
+    - Definite region [branch_start, k1]: uses J0/Y0 Bessel functions (oscillatory k_r)
+    - Indefinite region [k1, cutoff]: uses K0 Bessel function (evanescent k_r)
+  - Only computed in water layer (z ≤ H), matching the Fortran behavior
+
+  Usage:
+  # Full solution (discrete + continuous) - slower
+  python3 pekeris.py
+
+  # Discrete modes only - faster
+  python3 pekeris.py --discrete-only
+
+  # No plot, just compute
+  python3 pekeris.py --no-plot
+
+  Or in Python:
+  wg = PekerisWaveguide(omega, c1, c2, rho1, rho2, H, z_s, discrete_modes_only=True)
+
+  Note: The continuous spectrum computation will be significantly slower since it requires numerical integration at each evaluation point. The progress indicator will help track
+  computation on larger grids.
+
+✻ Brewed for 2m 37s
+
+❯ i ran it and the visual results look reasonable (i tweaked the vmin/vmax arguments a bit to emphasize the far-field pattern). let's commit this change
+
+● Bash(git status && git diff pekeris.py | head -100)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +112 lines (ctrl+o to expand)
+
+● Bash(git add pekeris.py && git commit -m "add continuous spectrum to Python Pekeris solver…)
+  ⎿  [main 0b70d66] add continuous spectrum to Python Pekeris solver
+      1 file changed, 243 insertions(+), 68 deletions(-)
+
+● Committed as 0b70d66.
+
+❯ now i want to focus on performance of the continuous spectrum calculation.  one idea is to decorate the integrand methods using numba.  what do you think?
+
+● There are some challenges with using numba here:
+
+  1. Class method limitation: Numba's @jit doesn't work directly with instance methods that reference self. The integrand functions would need to be refactored into standalone functions.
+  2. scipy.special functions: jv, yv, kv are not supported by numba's nopython mode. You'd need to either:
+    - Use numba_scipy (a separate package that provides numba-compatible wrappers)
+    - Use numba's own numba.special which has limited Bessel function support
+    - Fall back to object mode (loses most of the speedup)
+  3. scipy.integrate.quad compatibility: The integrator expects a Python callable, which adds some overhead when calling numba-jitted functions.
+
+  Alternative approaches worth considering:
+
+  1. Parallelization: Since each (r, z) point is independent, parallelize across grid points using multiprocessing or joblib. This is the lowest-effort, highest-impact change.
+  2. Vectorized integration: Use scipy.integrate.quad_vec or fixed-quadrature rules (Gauss-Legendre) that can be fully vectorized over (r, z).
+  3. Lookup table / interpolation: Pre-compute the continuous spectrum on a coarse (r, z) grid and interpolate - the field varies smoothly.
+  4. Numba with restructuring: Pull integrands into module-level functions, use numba_scipy for Bessel functions.
+
+  Would you like me to:
+  - (A) Try the numba approach with restructured code + numba_scipy
+  - (B) Add parallelization over grid points (simpler, good speedup on multi-core)
+  - (C) Implement fixed Gauss-Legendre quadrature that can be fully vectorized/numba-compiled
+
+❯ lets try B, parallelization over grid points
+
+● Read(pekeris.py)
+  ⎿  Read 50 lines
+
+● Read(pekeris.py)
+  ⎿  Read 80 lines
+
+● I'll add parallelization using concurrent.futures.ProcessPoolExecutor from the standard library. The key is creating a module-level helper function that can be pickled.
+
+● Update(pekeris.py)
+  ⎿  Added 12 lines
+      12  from scipy.optimize import brentq
+      13  from scipy.special import jv, yv, kv  # Bessel functions J_n, Y_n, K_n
+      14  from scipy.integrate import quad
+      15 +from concurrent.futures import ProcessPoolExecutor
+      16 +import multiprocessing
+      17 +import os
+      18
+      19
+      20 +def _compute_pressure_point(args):
+      21 +    """Worker function for parallel pressure computation.
+      22 +
+      23 +    This is a module-level function so it can be pickled for multiprocessing.
+      24 +    """
+      25 +    wg, r, z = args
+      26 +    return wg.pressure(r, z)
+      27 +
+      28 +
+      29  class PekerisWaveguide:
+      30      """
+      31      Pekeris waveguide solver.
+
+● Update(pekeris.py)
+  ⎿  Added 37 lines, removed 8 lines
+      409          return np.conj(grad_r), np.conj(-grad_z)
+      410
+      411      def pressure_field(self, r_array: np.ndarray, z_array: np.ndarray,
+      412 -                      show_progress: bool = True) -> np.ndarray:
+      412 +                      show_progress: bool = True, n_jobs: int = None) -> np.ndarray:
+      413          """
+      414          Compute pressure field on a grid.
+      415
+     ...
+      421              1D array of depths (m)
+      422          show_progress : bool
+      423              Print progress indicator (useful when including continuous spectrum)
+      424 +        n_jobs : int
+      425 +            Number of parallel processes. Default (None) uses all available CPUs.
+      426 +            Set to 1 for serial computation.
+      427
+      428          Returns
+      429          -------
+      430          np.ndarray
+      431              2D complex array of pressure values, shape (len(z_array), len(r_array))
+      432          """
+      430 -        P = np.zeros((len(z_array), len(r_array)), dtype=complex)
+      433 +        nz, nr = len(z_array), len(r_array)
+      434 +        total = nz * nr
+      435
+      432 -        total = len(z_array) * len(r_array)
+      433 -        for i, z in enumerate(z_array):
+      434 -            for j, r in enumerate(r_array):
+      435 -                P[i, j] = self.pressure(r, z)
+      436 -            if show_progress and (i + 1) % 10 == 0:
+      437 -                print(f"  Progress: {(i+1)*len(r_array)}/{total} points")
+      436 +        # Determine number of workers
+      437 +        if n_jobs is None:
+      438 +            n_jobs = multiprocessing.cpu_count()
+      439 +        n_jobs = min(n_jobs, total)  # Don't use more workers than points
+      440
+      441 +        # Serial computation
+      442 +        if n_jobs == 1:
+      443 +            P = np.zeros((nz, nr), dtype=complex)
+      444 +            for i, z in enumerate(z_array):
+      445 +                for j, r in enumerate(r_array):
+      446 +                    P[i, j] = self.pressure(r, z)
+      447 +                if show_progress and (i + 1) % 10 == 0:
+      448 +                    print(f"  Progress: {(i+1)*nr}/{total} points")
+      449 +            return P
+      450 +
+      451 +        # Parallel computation
+      452 +        if show_progress:
+      453 +            print(f"  Using {n_jobs} parallel workers for {total} points...")
+      454 +
+      455 +        # Build list of all (wg, r, z) argument tuples
+      456 +        args_list = [(self, r, z) for z in z_array for r in r_array]
+      457 +
+      458 +        # Use ProcessPoolExecutor for parallel computation
+      459 +        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+      460 +            results = list(executor.map(_compute_pressure_point, args_list, chunksize=max(1, total // (n_jobs * 4))))
+      461 +
+      462 +        # Reshape results to 2D array
+      463 +        P = np.array(results, dtype=complex).reshape(nz, nr)
+      464 +
+      465 +        if show_progress:
+      466 +            print(f"  Completed {total} points")
+      467 +
+      468          return P
+      469
+      470      def __repr__(self):
+
+● Now let me update the plot_field function and command-line interface to expose the n_jobs parameter.
+
+● Read(pekeris.py)
+  ⎿  Read 100 lines
+
+● Read(pekeris.py)
+  ⎿  Read 19 lines
+
+● Update(pekeris.py)
+  ⎿  Added 5 lines, removed 2 lines
+      520
+      521
+      522  def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
+      523 -               nr: int = 200, nz: int = 100, r_min: float = 1.0, save_only: bool = False):
+      523 +               nr: int = 200, nz: int = 100, r_min: float = 1.0, save_only: bool = False,
+      524 +               n_jobs: int = None):
+      525      """
+      526      Plot the pressure field magnitude and phase.
+      527
+     ...
+      541          Minimum range (m), avoid r=0 singularity
+      542      save_only : bool
+      543          If True, only save to file without displaying (for headless environments)
+      544 +    n_jobs : int
+      545 +        Number of parallel processes. Default (None) uses all available CPUs.
+      546      """
+      547      import matplotlib
+      548      if save_only:
+     ...
+      558
+      559      mode_str = "discrete only" if wg.discrete_modes_only else "discrete + continuous"
+      560      print(f"\nComputing pressure field on {nr}x{nz} grid ({mode_str})...")
+      558 -    P = wg.pressure_field(r_array, z_array)
+      561 +    P = wg.pressure_field(r_array, z_array, n_jobs=n_jobs)
+      562
+      563      # Compute transmission loss: TL = -20*log10(|p| * r) relative to 1m
+      564      # For display, use magnitude in dB relative to max
+
+● Update(pekeris.py)
+  ⎿  Added 1 line, removed 1 line
+      514      print(f"  dp/dz = {grad_z}")
+      515
+      516      if show_plot:
+      517 -        plot_field(wg)
+      517 +        plot_field(wg, n_jobs=n_jobs)
+      518
+      519      return wg
+      520
+
+● Update(pekeris.py)
+  ⎿  Added 1 line, removed 1 line
+      474                  f"n_modes={self.n_modes}, mode={mode_str})")
+      475
+      476
+      477 -def example(show_plot=True, discrete_only=False):
+      477 +def example(show_plot=True, discrete_only=False, n_jobs=None):
+      478      """Run an example calculation matching the Fortran test case."""
+      479
+      480      # Example parameters (from commented main() in pekeris.c)
+
+● Update(pekeris.py)
+  ⎿  Added 3 lines, removed 1 line
+      609                         help='Use discrete modes only (skip continuous spectrum)')
+      610      parser.add_argument('--no-plot', action='store_true',
+      611                         help='Skip plotting')
+      612 +    parser.add_argument('-j', '--jobs', type=int, default=None,
+      613 +                       help='Number of parallel processes (default: all CPUs)')
+      614      args = parser.parse_args()
+      615
+      614 -    example(show_plot=not args.no_plot, discrete_only=args.discrete_only)
+      616 +    example(show_plot=not args.no_plot, discrete_only=args.discrete_only, n_jobs=args.jobs)
+
+● Let me verify the changes look correct.
+
+● Bash(head -35 /home/jzitelli/GitHub/pekeris-waveguide-solver/pekeris.py)
+  ⎿  """
+     Pekeris waveguide exact solution.
+     … +32 lines (ctrl+o to expand)
+
+● Update(pekeris.py)
+  ⎿  Removed 1 line
+      14  from scipy.integrate import quad
+      15  from concurrent.futures import ProcessPoolExecutor
+      16  import multiprocessing
+      17 -import os
+      17
+      18
+      19  def _compute_pressure_point(args):
+
+● Let me test that the parallelization works.
+
+● Bash(python3 -c "
+      from pekeris import PekerisWaveguide…)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ i ran the script again and it executes much faster.  let's commit this
+
+● Bash(git status && git diff pekeris.py | head -80)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +92 lines (ctrl+o to expand)
+
+● Bash(git add pekeris.py && git commit -m "add parallel computation for pressure field…)
+  ⎿  [main 343f9a0] add parallel computation for pressure field
+      1 file changed, 58 insertions(+), 13 deletions(-)
+
+● Committed as 343f9a0.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ compare results with the Fortran implementation                                                                                                                                    ↵ send
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  3 files +5 -766
