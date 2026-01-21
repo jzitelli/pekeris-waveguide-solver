@@ -6,6 +6,10 @@ The Python script `pekeris.py` was generated from original Fortran/C code (writt
 
 When the Fortran implementation was originally written, its output was verified against a finite-element model .  The Claude-generated Python code has not been rigorously verified.  I have only inspected the Python output visually.
 
+
+![Demo screenshot](images/pekeris_field.png)
+
+
 ## Python dependencies
 - numpy
 - scipy (Brent solver, Bessel functions, adaptive integration)
