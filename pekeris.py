@@ -601,6 +601,92 @@ def plot_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
         plt.show()
 
 
+def animate_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
+                  nr: int = 200, nz: int = 100, r_min: float = 1.0,
+                  n_jobs: int = None, filename: str = 'pekeris_animation.gif'):
+    """
+    Generate an animated GIF of the time-harmonic pressure field.
+
+    Parameters
+    ----------
+    wg : PekerisWaveguide
+        Waveguide instance
+    r_max : float
+        Maximum range (m)
+    z_max : float
+        Maximum depth (m), defaults to 1.5 * H
+    nr : int
+        Number of range points
+    nz : int
+        Number of depth points
+    r_min : float
+        Minimum range (m)
+    n_jobs : int
+        Number of parallel processes
+    filename : str
+        Output GIF filename
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from PIL import Image
+    import io
+
+    n_frames = 30
+
+    if z_max is None:
+        z_max = 1.5 * wg.H
+
+    # Create grid
+    r_array = np.linspace(r_min, r_max, nr)
+    z_array = np.linspace(0, z_max, nz)
+
+    mode_str = "discrete only" if wg.discrete_modes_only else "discrete + continuous"
+    print(f"\nComputing pressure field on {nr}x{nz} grid ({mode_str})...")
+    P = wg.pressure_field(r_array, z_array, n_jobs=n_jobs)
+
+    # Time phases for animation (one full period)
+    phases = np.linspace(0, 2*np.pi, n_frames, endpoint=False)
+
+    # Determine color scale from the full range of real values
+    P_real_max = np.max(np.abs(P))
+    vlim = P_real_max * 0.015
+
+    frames = []
+    print(f"Generating {n_frames} animation frames...")
+
+    for i, phase in enumerate(phases):
+        # Instantaneous pressure: Re(P * exp(i*phase))
+        P_instant = np.real(P * np.exp(-1j * phase))
+
+        fig, ax = plt.subplots(figsize=(12, 5))
+        im = ax.pcolormesh(r_array, z_array, P_instant, shading='auto',
+                          cmap='RdBu_r', vmin=-vlim, vmax=vlim)
+        ax.axhline(wg.H, color='black', linestyle='--', linewidth=1, label='Seafloor')
+        ax.axhline(wg.z_s, color='red', linestyle=':', linewidth=1, label='Source')
+        ax.set_xlabel('Range (m)')
+        ax.set_ylabel('Depth (m)')
+        ax.set_title(f'Pekeris Waveguide: f={wg.omega/(2*np.pi):.1f} Hz')
+        ax.invert_yaxis()
+        ax.legend(loc='lower right')
+        fig.colorbar(im, ax=ax, label='Re(p)')
+        plt.tight_layout()
+
+        # Save frame to buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=100)
+        buf.seek(0)
+        frames.append(Image.open(buf).copy())
+        buf.close()
+        plt.close(fig)
+
+    # Save as animated GIF
+    print(f"Saving animation to {filename}...")
+    frames[0].save(filename, save_all=True, append_images=frames[1:],
+                   duration=20, loop=0)
+    print(f"Animation saved to {filename}")
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Pekeris waveguide solver')
@@ -608,8 +694,13 @@ if __name__ == "__main__":
                        help='Use discrete modes only (skip continuous spectrum)')
     parser.add_argument('--no-plot', action='store_true',
                        help='Skip plotting')
+    parser.add_argument('--animate-field', action='store_true',
+                       help='Generate animated GIF of time-harmonic field')
     parser.add_argument('-j', '--jobs', type=int, default=None,
                        help='Number of parallel processes (default: all CPUs)')
     args = parser.parse_args()
 
-    example(show_plot=not args.no_plot, discrete_only=args.discrete_only, n_jobs=args.jobs)
+    wg = example(show_plot=not args.no_plot, discrete_only=args.discrete_only, n_jobs=args.jobs)
+
+    if args.animate_field:
+        animate_field(wg, nr=400, nz=200, n_jobs=args.jobs)
