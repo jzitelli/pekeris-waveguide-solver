@@ -441,7 +441,8 @@ def solve_pekeris_fem(
     return mesh_data, uh, params
 
 
-def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris_fem_field.png"):
+def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris_fem_field.png",
+                       n_subdivisions=3):
     """
     Visualize the FEM solution using PyVista.
 
@@ -457,6 +458,8 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
         If True, save to file without displaying
     filename : str
         Output filename for the plot
+    n_subdivisions : int
+        Number of subdivisions per element edge for higher-order visualization
     """
     try:
         import pyvista
@@ -469,30 +472,43 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
         pyvista.OFF_SCREEN = True
 
     msh = mesh_data.mesh
+    degree = params['degree']
 
-    # Create grid for plotting
-    topology, cell_types, geometry = plot.vtk_mesh(msh, msh.topology.dim)
+    # For higher-order elements, we need to sample within each cell
+    # Create a finer visualization by interpolating to a higher-order Lagrange space
+    # and using VTK's capability to handle it
+
+    # Create a finer Lagrange space for visualization
+    # The number of subdivisions determines the visual fidelity
+    viz_degree = max(degree, n_subdivisions)
+
+    # Create VTK mesh with subdivision for proper higher-order visualization
+    # This creates additional points within each cell
+    V_viz = fem.functionspace(msh, ("Lagrange", viz_degree))
+    p_viz = fem.Function(V_viz)
+    p_viz.interpolate(uh)
+
+    # Get the VTK mesh with higher-order points
+    topology, cell_types, geometry = plot.vtk_mesh(V_viz)
     grid = pyvista.UnstructuredGrid(topology, cell_types, geometry)
 
-    # Get solution values at mesh vertices by interpolating to a P1 DG space
-    # This gives us values at the nodes that pyvista can use
-    V_dg = fem.functionspace(msh, ("DG", 0))
-    p_dg = fem.Function(V_dg)
-    p_dg.interpolate(uh)
+    # Get nodal values from the visualization function
+    p_values = p_viz.x.array
 
-    # Get cell values directly from DG0 function
-    p_cells = p_dg.x.array
-
-    # Add data to grid
-    grid.cell_data["Re(p)"] = np.real(p_cells)
-    grid.cell_data["Im(p)"] = np.imag(p_cells)
-    grid.cell_data["|p|"] = np.abs(p_cells)
+    # Add point data (values at nodes)
+    grid.point_data["Re(p)"] = np.real(p_values)
+    grid.point_data["Im(p)"] = np.imag(p_values)
+    grid.point_data["|p|"] = np.abs(p_values)
 
     # Compute dB scale (relative to max)
-    p_abs = np.abs(p_cells)
+    p_abs = np.abs(p_values)
     p_max = np.max(p_abs)
     p_db = 20 * np.log10(p_abs / p_max + 1e-20)
-    grid.cell_data["p (dB)"] = p_db
+    grid.point_data["p (dB)"] = p_db
+
+    # Subdivide the grid for smooth visualization of higher-order data
+    # This tessellates curved elements into linear pieces for rendering
+    grid = grid.tessellate()
 
     # Create figure with multiple views
     H = params['H']
@@ -507,8 +523,7 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
     # Plot 1: Magnitude in dB
     plotter.subplot(0, 0)
     plotter.add_text("|p| (dB re max)", font_size=12)
-    grid.set_active_scalars("p (dB)")
-    plotter.add_mesh(grid.copy(), cmap='viridis', clim=[-60, 0], show_edges=False)
+    plotter.add_mesh(grid.copy(), scalars="p (dB)", cmap='viridis', clim=[-60, 0], show_edges=False)
     # Add interface line
     plotter.add_mesh(
         pyvista.Line([0, H, 0], [r_max + pml_r, H, 0]),
@@ -525,9 +540,8 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
     # Plot 2: Real part
     plotter.subplot(0, 1)
     plotter.add_text("Re(p)", font_size=12)
-    grid.set_active_scalars("Re(p)")
-    vlim = np.max(np.abs(np.real(p_cells))) * 0.1
-    plotter.add_mesh(grid.copy(), cmap='RdBu_r', clim=[-vlim, vlim], show_edges=False)
+    vlim = np.max(np.abs(np.real(p_values))) * 0.1
+    plotter.add_mesh(grid.copy(), scalars="Re(p)", cmap='RdBu_r', clim=[-vlim, vlim], show_edges=False)
     plotter.add_mesh(
         pyvista.Line([0, H, 0], [r_max + pml_r, H, 0]),
         color='black', line_width=2
@@ -538,9 +552,8 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
     # Plot 3: Imaginary part
     plotter.subplot(1, 0)
     plotter.add_text("Im(p)", font_size=12)
-    grid.set_active_scalars("Im(p)")
-    vlim_im = np.max(np.abs(np.imag(p_cells))) * 0.1
-    plotter.add_mesh(grid.copy(), cmap='RdBu_r', clim=[-vlim_im, vlim_im], show_edges=False)
+    vlim_im = np.max(np.abs(np.imag(p_values))) * 0.1
+    plotter.add_mesh(grid.copy(), scalars="Im(p)", cmap='RdBu_r', clim=[-vlim_im, vlim_im], show_edges=False)
     plotter.add_mesh(
         pyvista.Line([0, H, 0], [r_max + pml_r, H, 0]),
         color='black', line_width=2
@@ -551,8 +564,7 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
     # Plot 4: Absolute value
     plotter.subplot(1, 1)
     plotter.add_text("|p|", font_size=12)
-    grid.set_active_scalars("|p|")
-    plotter.add_mesh(grid.copy(), cmap='hot', show_edges=False)
+    plotter.add_mesh(grid.copy(), scalars="|p|", cmap='hot', show_edges=False)
     plotter.add_mesh(
         pyvista.Line([0, H, 0], [r_max + pml_r, H, 0]),
         color='cyan', line_width=2
