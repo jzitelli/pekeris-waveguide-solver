@@ -1,0 +1,170 @@
+
+ ▐▛███▜▌   Claude Code v2.1.12
+▝▜█████▛▘  Opus 4.5 · Claude Pro
+  ▘▘ ▝▝    ~/GitHub/pekeris-waveguide-solver
+
+❯ i want to add another visualization feature to @pekeris.py - generating an animated GIF of the time-harmonic pressure field.  PIL can be used to assemble the gif.
+  hard code it to 30 timesteps for now.  implement this is in new function called animate_field.  don't change plot_field.  add another script option
+  '--animate-field' (needs to be explicitly enabled) to control this output generation.
+  ⎿  Read pekeris.py (616 lines)
+
+● I'll add the animate_field function and the --animate-field command line option. Let me implement this.
+
+● Update(pekeris.py)
+  ⎿  Added 92 lines, removed 1 line
+      601          plt.show()
+      602
+      603
+      604 +def animate_field(wg: PekerisWaveguide, r_max: float = 1000.0, z_max: float = None,
+      605 +                  nr: int = 200, nz: int = 100, r_min: float = 1.0,
+      606 +                  n_jobs: int = None, filename: str = 'pekeris_animation.gif'):
+      607 +    """
+      608 +    Generate an animated GIF of the time-harmonic pressure field.
+      609 +
+      610 +    Parameters
+      611 +    ----------
+      612 +    wg : PekerisWaveguide
+      613 +        Waveguide instance
+      614 +    r_max : float
+      615 +        Maximum range (m)
+      616 +    z_max : float
+      617 +        Maximum depth (m), defaults to 1.5 * H
+      618 +    nr : int
+      619 +        Number of range points
+      620 +    nz : int
+      621 +        Number of depth points
+      622 +    r_min : float
+      623 +        Minimum range (m)
+      624 +    n_jobs : int
+      625 +        Number of parallel processes
+      626 +    filename : str
+      627 +        Output GIF filename
+      628 +    """
+      629 +    import matplotlib
+      630 +    matplotlib.use('Agg')
+      631 +    import matplotlib.pyplot as plt
+      632 +    from PIL import Image
+      633 +    import io
+      634 +
+      635 +    n_frames = 30
+      636 +
+      637 +    if z_max is None:
+      638 +        z_max = 1.5 * wg.H
+      639 +
+      640 +    # Create grid
+      641 +    r_array = np.linspace(r_min, r_max, nr)
+      642 +    z_array = np.linspace(0, z_max, nz)
+      643 +
+      644 +    mode_str = "discrete only" if wg.discrete_modes_only else "discrete + continuous"
+      645 +    print(f"\nComputing pressure field on {nr}x{nz} grid ({mode_str})...")
+      646 +    P = wg.pressure_field(r_array, z_array, n_jobs=n_jobs)
+      647 +
+      648 +    # Time phases for animation (one full period)
+      649 +    phases = np.linspace(0, 2*np.pi, n_frames, endpoint=False)
+      650 +
+      651 +    # Determine color scale from the full range of real values
+      652 +    P_real_max = np.max(np.abs(P))
+      653 +    vlim = P_real_max * 0.02
+      654 +
+      655 +    frames = []
+      656 +    print(f"Generating {n_frames} animation frames...")
+      657 +
+      658 +    for i, phase in enumerate(phases):
+      659 +        # Instantaneous pressure: Re(P * exp(i*phase))
+      660 +        P_instant = np.real(P * np.exp(1j * phase))
+      661 +
+      662 +        fig, ax = plt.subplots(figsize=(12, 5))
+      663 +        im = ax.pcolormesh(r_array, z_array, P_instant, shading='auto',
+      664 +                          cmap='RdBu_r', vmin=-vlim, vmax=vlim)
+      665 +        ax.axhline(wg.H, color='black', linestyle='--', linewidth=1, label='Seafloor')
+      666 +        ax.axhline(wg.z_s, color='red', linestyle=':', linewidth=1, label='Source')
+      667 +        ax.set_xlabel('Range (m)')
+      668 +        ax.set_ylabel('Depth (m)')
+      669 +        ax.set_title(f'Pekeris Waveguide: f={wg.omega/(2*np.pi):.1f} Hz, phase={np.degrees(phase):.0f}°')
+      670 +        ax.invert_yaxis()
+      671 +        ax.legend(loc='lower right')
+      672 +        fig.colorbar(im, ax=ax, label='Re(p)')
+      673 +        plt.tight_layout()
+      674 +
+      675 +        # Save frame to buffer
+      676 +        buf = io.BytesIO()
+      677 +        plt.savefig(buf, format='png', dpi=100)
+      678 +        buf.seek(0)
+      679 +        frames.append(Image.open(buf).copy())
+      680 +        buf.close()
+      681 +        plt.close(fig)
+      682 +
+      683 +    # Save as animated GIF
+      684 +    print(f"Saving animation to {filename}...")
+      685 +    frames[0].save(filename, save_all=True, append_images=frames[1:],
+      686 +                   duration=100, loop=0)
+      687 +    print(f"Animation saved to {filename}")
+      688 +
+      689 +
+      690  if __name__ == "__main__":
+      691      import argparse
+      692      parser = argparse.ArgumentParser(description='Pekeris waveguide solver')
+     ...
+      694                         help='Use discrete modes only (skip continuous spectrum)')
+      695      parser.add_argument('--no-plot', action='store_true',
+      696                         help='Skip plotting')
+      697 +    parser.add_argument('--animate-field', action='store_true',
+      698 +                       help='Generate animated GIF of time-harmonic field')
+      699      parser.add_argument('-j', '--jobs', type=int, default=None,
+      700                         help='Number of parallel processes (default: all CPUs)')
+      701      args = parser.parse_args()
+      702
+      615 -    example(show_plot=not args.no_plot, discrete_only=args.discrete_only, n_jobs=args.jobs)
+      703 +    wg = example(show_plot=not args.no_plot, discrete_only=args.discrete_only, n_jobs=args.jobs)
+      704 +
+      705 +    if args.animate_field:
+      706 +        animate_field(wg, n_jobs=args.jobs)
+
+● I've added the animate_field function and the --animate-field command line option. The function:
+
+  1. Computes the complex pressure field once on the grid
+  2. Generates 30 frames at evenly spaced phases (0° to 360°), computing the instantaneous pressure as Re(P * exp(i*phase))
+  3. Uses PIL to assemble the frames into an animated GIF with 100ms frame duration
+
+  Usage:
+  python pekeris.py --animate-field                    # full solution with animation
+  python pekeris.py --animate-field --discrete-only   # faster, discrete modes only
+  python pekeris.py --animate-field -j 4              # use 4 parallel workers
+
+✻ Brewed for 39s
+
+❯ i flipped the sign on the phase (i am assuming -i*omega*t convention) to animate an outgoing wave.  it looks good now, let's commit this
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +12 lines (ctrl+o to expand)
+
+● Bash(git diff pekeris.py)
+  ⎿  diff --git a/pekeris.py b/pekeris.py
+     index 910979a..ffd96d9 100644
+     --- a/pekeris.py
+     … +109 lines (ctrl+o to expand)
+
+● Bash(git log --oneline -5)
+  ⎿  adeb25f add example output image
+     7964ff0 Update README.md
+     0de11c4 remove slatec dependencies fortran code
+     … +2 lines (ctrl+o to expand)
+
+● Bash(git add pekeris.py && git commit -m "add animated GIF visualization of time-harmonic pressure field…)
+  ⎿  [main 931e7b7] add animated GIF visualization of time-harmonic pressure field
+      1 file changed, 92 insertions(+), 1 deletion(-)
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is ahead of 'origin/main' by 1 commit.
+       (use "git push" to publish your local commits)
+     … +8 lines (ctrl+o to expand)
+
+● Done. Committed as 931e7b7 with the animate_field function and --animate-field CLI option.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  50 files +92 -1

@@ -1,0 +1,822 @@
+
+ ▐▛███▜▌   Claude Code v2.1.14
+▝▜█████▛▘  Opus 4.5 · Claude Pro
+  ▘▘ ▝▝    ~/GitHub/pekeris-waveguide-solver
+
+❯ I had an idea... would it be possible to use some autodiff feature of tensorflow or pytorch to automatically take care of the gradients instead of
+  manually coding them in @pekeris.py?
+  ⎿  Read pekeris.py (707 lines)
+
+● Yes, this is definitely possible and could significantly simplify the code. Here's the analysis:
+
+  What autodiff could replace
+
+  The code currently has ~100 lines of manually-coded derivatives:
+  - _discrete_modes_gradient (lines 317-354)
+  - _continuous_spectrum_gradient (lines 265-292)
+  - Six separate derivative integrand functions (lines 194-236)
+
+  Feasibility by component
+
+  Discrete modes (straightforward): PyTorch and TensorFlow both support:
+  - Complex tensors
+  - Bessel functions (torch.special.bessel_j0, bessel_y0, etc.)
+  - Standard ops (sin, cos, exp)
+
+  You could rewrite _discrete_modes_pressure with tensors and get gradients for free.
+
+  Continuous spectrum (trickier): The scipy.integrate.quad isn't differentiable. Options:
+  1. Use fixed-point quadrature (Gauss-Legendre) which autodiff can differentiate through
+  2. Keep manual derivative integrands but simplify discrete modes
+  3. Use JAX which handles this more elegantly
+
+  Recommendation: JAX
+
+  JAX is probably the best fit here because:
+  - Excellent complex number support
+  - Can differentiate through many scipy-like operations
+  - jax.scipy.special has Bessel functions
+  - Cleaner functional API that matches your current code style
+
+  Would you like me to create a JAX-based implementation? I could start with just the discrete modes (simpler) or tackle the full solution including
+  continuous spectrum integration.
+
+❯ yes, create a JAX-based implementation.  just the discrete modes for now
+
+● I'll create a JAX-based implementation with autodiff for the gradients.
+
+● Write(pekeris_jax.py)
+  ⎿  Wrote 444 lines to pekeris_jax.py
+      1 """
+      2 Pekeris waveguide solver using JAX for automatic differentiation.
+      3 This module computes the acoustic pressure field in a two-layer Pekeris waveguide
+      4 using only discrete (trapped) modes. Gradients are computed automatically via JAX.
+      5 """
+      6 import jax
+      7 import jax.numpy as jnp
+      8 from jax.scipy.special import bessel_jn
+     … +434 lines (ctrl+o to expand)
+
+● Now let me run the comparison to test if the JAX implementation matches the original.
+
+● Bash(python pekeris_jax.py 2>&1)
+  ⎿  Error: Exit code 1
+     Traceback (most recent call last):
+       File "/home/jzitelli/GitHub/pekeris-waveguide-solver/pekeris_jax.py", line 8, in <module>
+         import jax
+     ModuleNotFoundError: No module named 'jax'
+
+● Let me install JAX in the virtual environment.
+
+● Bash(source venv312/bin/activate && pip install jax jaxlib 2>&1)
+  ⎿  Collecting jax
+       Downloading jax-0.9.0-py3-none-any.whl.metadata (13 kB)
+     Collecting jaxlib
+     … +16 lines (ctrl+o to expand)
+
+● Bash(source venv312/bin/activate && python pekeris_jax.py 2>&1)
+  ⎿  Error: Exit code 1
+     WARNING:2026-01-21 20:01:30,678:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     Pekeris Waveguide: JAX vs Original (discrete modes only)
+     ============================================================
+     Number of modes: 4
+
+     Pressure comparison:
+     ------------------------------------------------------------
+     Traceback (most recent call last):
+       File "/home/jzitelli/GitHub/pekeris-waveguide-solver/pekeris_jax.py", line 443, in <module>
+     … +19 lines (ctrl+o to see all)
+
+● The JAX Bessel function API is different. Let me check what's available and fix it.
+
+● Bash(source venv312/bin/activate && python -c "from jax.scipy.special import bessel_jn; help(bessel_jn)" 2>&1 | head -30) timeout: 30s
+  ⎿  Help on PjitFunction in module jax._src.scipy.special:
+
+     bessel_jn(z: 'ArrayLike', *, v: 'int', n_iter: 'int' = 50) -> 'Array'
+     … +23 lines (ctrl+o to expand)
+
+● Bash(source venv312/bin/activate && python -c "import jax.scipy.special as jsp; print([x for x in dir(jsp) if 'bessel' in x.lower()])" 2>&1) timeout: 30s
+  ⎿  ['bessel_jn']
+
+● JAX only has bessel_jn. Let me rewrite with the correct API and implement Y0/Y1 properly.
+
+● Update(pekeris_jax.py)
+  ⎿  Added 55 lines, removed 29 lines
+      15  jax.config.update("jax_enable_x64", True)
+      16
+      17
+      18 +def _bessel_j0(x):
+      19 +    """Bessel function of the first kind, order 0."""
+      20 +    # bessel_jn returns shape (v+1, *x.shape), so [0] gives J0
+      21 +    return bessel_jn(x, v=0)[0]
+      22 +
+      23 +
+      24 +def _bessel_j1(x):
+      25 +    """Bessel function of the first kind, order 1."""
+      26 +    return bessel_jn(x, v=1)[1]
+      27 +
+      28 +
+      29  def _bessel_y0(x):
+      30      """Bessel function of the second kind, order 0.
+      31
+      21 -    JAX doesn't have Y_n built-in, so we use the relation:
+      22 -    Y_0(x) can be computed via the series or we use a custom implementation.
+      23 -
+      24 -    For simplicity, we'll use a finite difference approximation of the Wronskian
+      25 -    or import from a JAX-compatible library. Here we use a direct implementation.
+      32 +    Uses series expansion for small x and asymptotic expansion for large x.
+      33      """
+      27 -    # Use the integral representation or series for Y0
+      28 -    # For now, use the fact that JAX can differentiate through lax operations
+      29 -    # We'll implement Y0 using its relation to J0 and the Neumann series
+      34 +    gamma = 0.5772156649015329  # Euler-Mascheroni constant
+      35
+      31 -    # Approximation using the asymptotic form for large x and series for small x
+      32 -    # This is a simplified implementation - for production, use more terms
+      33 -
+      36      def y0_small(x):
+      35 -        # For small x: Y0(x) ≈ (2/π)[J0(x)(ln(x/2) + γ) + series...]
+      36 -        # γ = Euler-Mascheroni constant ≈ 0.5772156649
+      37 -        gamma = 0.5772156649015329
+      38 -        j0 = bessel_jn(0, x)
+      39 -        # First few terms of the series
+      40 -        term = (x/2)**2
+      41 -        series = term * (1 - term/4 * (1 - term/9 * (1 - term/16)))
+      37 +        # Y0(x) = (2/π)[J0(x)(ln(x/2) + γ) + Σ (-1)^(k+1) H_k (x/2)^(2k) / (k!)^2]
+      38 +        # where H_k = 1 + 1/2 + ... + 1/k
+      39 +        j0 = _bessel_j0(x)
+      40 +        x2 = (x/2)**2
+      41 +
+      42 +        # Series terms with harmonic numbers H_k
+      43 +        # k=1: H_1=1, term = -x2 * 1
+      44 +        # k=2: H_2=1.5, term = x2^2/4 * 1.5
+      45 +        # k=3: H_3=11/6, term = -x2^3/36 * 11/6
+      46 +        # k=4: H_4=25/12, term = x2^4/576 * 25/12
+      47 +        series = (-x2 * 1.0 +
+      48 +                  x2**2 / 4 * 1.5 -
+      49 +                  x2**3 / 36 * (11.0/6) +
+      50 +                  x2**4 / 576 * (25.0/12) -
+      51 +                  x2**5 / 14400 * (137.0/60) +
+      52 +                  x2**6 / 518400 * (49.0/20))
+      53          return (2/jnp.pi) * (j0 * (jnp.log(x/2) + gamma) + series)
+      54
+      55      def y0_large(x):
+      45 -        # Asymptotic expansion for large x
+      46 -        # Y0(x) ≈ sqrt(2/(πx)) * sin(x - π/4) * (1 + O(1/x))
+      47 -        return jnp.sqrt(2/(jnp.pi * x)) * jnp.sin(x - jnp.pi/4)
+      56 +        # Asymptotic expansion: Y0(x) ~ sqrt(2/(πx)) * sin(x - π/4) * P(x) + cos(x - π/4) * Q(x)
+      57 +        # Keep more terms for accuracy
+      58 +        mu = 0.0  # 4*0^2 = 0 for order 0
+      59 +        x8 = 8 * x
+      60 +        P = 1 - (mu - 1)*(mu - 9)/(2 * x8**2) + (mu - 1)*(mu - 9)*(mu - 25)*(mu - 49)/(24 * x8**4)
+      61 +        Q = (mu - 1)/(1 * x8) - (mu - 1)*(mu - 9)*(mu - 25)/(6 * x8**3)
+      62 +        chi = x - jnp.pi/4
+      63 +        return jnp.sqrt(2/(jnp.pi * x)) * (P * jnp.sin(chi) + Q * jnp.cos(chi))
+      64
+      49 -    # Use a smooth transition
+      65      return jnp.where(x < 8.0, y0_small(x), y0_large(x))
+      66
+      67
+      68  def _bessel_y1(x):
+      69      """Bessel function of the second kind, order 1."""
+      70 +    gamma = 0.5772156649015329
+      71 +
+      72      def y1_small(x):
+      56 -        gamma = 0.5772156649015329
+      57 -        j1 = bessel_jn(1, x)
+      58 -        j0 = bessel_jn(0, x)
+      59 -        # Y1(x) ≈ (2/π)[J1(x)(ln(x/2) + γ) - 1/x - x/2 * ...]
+      60 -        return (2/jnp.pi) * (j1 * (jnp.log(x/2) + gamma) - 1/x + x/4)
+      73 +        j1 = _bessel_j1(x)
+      74 +        x2 = (x/2)**2
+      75
+      76 +        # Series for Y1: (2/π)[J1(x)(ln(x/2) + γ) - 1/x + x/2 * Σ...]
+      77 +        series = (x/2) * (-0.5 +
+      78 +                          x2 / 2 * (1.0 - 0.5) -
+      79 +                          x2**2 / 12 * (1.5 - 1.0/3) +
+      80 +                          x2**3 / 144 * (11.0/6 - 0.25))
+      81 +        return (2/jnp.pi) * (j1 * (jnp.log(x/2) + gamma) - 1/x + series)
+      82 +
+      83      def y1_large(x):
+      63 -        # Asymptotic: Y1(x) ≈ sqrt(2/(πx)) * sin(x - 3π/4)
+      64 -        return jnp.sqrt(2/(jnp.pi * x)) * jnp.sin(x - 3*jnp.pi/4)
+      84 +        # Asymptotic for Y1
+      85 +        mu = 4.0  # 4*1^2 = 4 for order 1
+      86 +        x8 = 8 * x
+      87 +        P = 1 + (mu - 1)*(mu - 9)/(2 * x8**2)
+      88 +        Q = (mu - 1)/(1 * x8) - (mu - 1)*(mu - 9)*(mu - 25)/(6 * x8**3)
+      89 +        chi = x - 3*jnp.pi/4
+      90 +        return jnp.sqrt(2/(jnp.pi * x)) * (P * jnp.sin(chi) + Q * jnp.cos(chi))
+      91
+      92      return jnp.where(x < 8.0, y1_small(x), y1_large(x))
+      93
+
+● Update(pekeris_jax.py)
+  ⎿  Added 1 line, removed 1 line
+      163      """
+      164      # Hankel function of the second kind: H0^(2)(x) = J0(x) - i*Y0(x)
+      165      def hankel2_0(x):
+      166 -        return bessel_jn(0, x) - 1j * _bessel_y0(x)
+      166 +        return _bessel_j0(x) - 1j * _bessel_y0(x)
+      167
+      168      # Sum over all modes
+      169      modal_amps = A_sqrd * jnp.sin(k1_z * z_s) * jnp.sin(k1_z * z)
+
+● Update(pekeris_jax.py)
+  ⎿  Added 1 line, removed 1 line
+      182      Compute discrete modes pressure for a point in the sediment layer (z > H).
+      183      """
+      184      def hankel2_0(x):
+      185 -        return bessel_jn(0, x) - 1j * _bessel_y0(x)
+      185 +        return _bessel_j0(x) - 1j * _bessel_y0(x)
+      186
+      187      modal_amps = (A_sqrd * jnp.sin(k1_z * z_s) *
+      188                    jnp.sin(k1_z * H) * jnp.exp(k2_z * (H - z)))
+
+● Bash(source venv312/bin/activate && python pekeris_jax.py 2>&1)
+  ⎿  WARNING:2026-01-21 20:03:15,424:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     Pekeris Waveguide: JAX vs Original (discrete modes only)
+     … +45 lines (ctrl+o to expand)
+
+● There's an issue with the Y0 implementation at larger arguments. Let me debug by comparing directly with scipy's Bessel functions.
+
+● Bash(source venv312/bin/activate && python -c " timeout: 30s
+      import numpy as np…)
+  ⎿  WARNING:2026-01-21 20:03:42,266:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     x       scipy_Y0         jax_Y0           error
+     … +9 lines (ctrl+o to expand)
+
+● The Y0 series implementation is incorrect. Let me use accurate polynomial approximations instead.
+
+● Update(pekeris_jax.py)
+  ⎿  Added 76 lines, removed 43 lines
+       29  def _bessel_y0(x):
+       30      """Bessel function of the second kind, order 0.
+       31
+       32 -    Uses series expansion for small x and asymptotic expansion for large x.
+       32 +    Uses polynomial approximations from Abramowitz & Stegun / Numerical Recipes.
+       33 +    Accurate to about 1e-8 relative error.
+       34      """
+       34 -    gamma = 0.5772156649015329  # Euler-Mascheroni constant
+       35 +    # For x <= 3: use polynomial fit to Y0(x) - (2/π)ln(x/2)J0(x)
+       36 +    # For x > 3: use asymptotic form with polynomial corrections
+       37
+       38      def y0_small(x):
+       37 -        # Y0(x) = (2/π)[J0(x)(ln(x/2) + γ) + Σ (-1)^(k+1) H_k (x/2)^(2k) / (k!)^2]
+       38 -        # where H_k = 1 + 1/2 + ... + 1/k
+       39 +        # Approximation for 0 < x <= 3
+       40 +        # Y0(x) ≈ (2/π)ln(x/2)J0(x) + polynomial
+       41          j0 = _bessel_j0(x)
+       40 -        x2 = (x/2)**2
+       42 +        x3 = x / 3.0
+       43 +        x3sq = x3 * x3
+       44
+       42 -        # Series terms with harmonic numbers H_k
+       43 -        # k=1: H_1=1, term = -x2 * 1
+       44 -        # k=2: H_2=1.5, term = x2^2/4 * 1.5
+       45 -        # k=3: H_3=11/6, term = -x2^3/36 * 11/6
+       46 -        # k=4: H_4=25/12, term = x2^4/576 * 25/12
+       47 -        series = (-x2 * 1.0 +
+       48 -                  x2**2 / 4 * 1.5 -
+       49 -                  x2**3 / 36 * (11.0/6) +
+       50 -                  x2**4 / 576 * (25.0/12) -
+       51 -                  x2**5 / 14400 * (137.0/60) +
+       52 -                  x2**6 / 518400 * (49.0/20))
+       53 -        return (2/jnp.pi) * (j0 * (jnp.log(x/2) + gamma) + series)
+       45 +        # Polynomial coefficients for the "P" part
+       46 +        p = (- 0.0000000077
+       47 +             + x3sq * (0.0000055274
+       48 +             + x3sq * (-0.0009512680
+       49 +             + x3sq * (0.0678336170
+       50 +             + x3sq * (-0.7489575680
+       51 +             + x3sq * 0.3674669220)))))
+       52
+       53 +        return (2.0/jnp.pi) * jnp.log(x/2.0) * j0 + 0.36746691 + p
+       54 +
+       55      def y0_large(x):
+       56 -        # Asymptotic expansion: Y0(x) ~ sqrt(2/(πx)) * sin(x - π/4) * P(x) + cos(x - π/4) * Q(x)
+       57 -        # Keep more terms for accuracy
+       58 -        mu = 0.0  # 4*0^2 = 0 for order 0
+       59 -        x8 = 8 * x
+       60 -        P = 1 - (mu - 1)*(mu - 9)/(2 * x8**2) + (mu - 1)*(mu - 9)*(mu - 25)*(mu - 49)/(24 * x8**4)
+       61 -        Q = (mu - 1)/(1 * x8) - (mu - 1)*(mu - 9)*(mu - 25)/(6 * x8**3)
+       62 -        chi = x - jnp.pi/4
+       63 -        return jnp.sqrt(2/(jnp.pi * x)) * (P * jnp.sin(chi) + Q * jnp.cos(chi))
+       56 +        # Approximation for x > 3
+       57 +        # Y0(x) ≈ sqrt(2/(πx)) * [P0*sin(χ) + Q0*cos(χ)]
+       58 +        # where χ = x - π/4
+       59 +        z = 3.0 / x
+       60 +        zsq = z * z
+       61
+       65 -    return jnp.where(x < 8.0, y0_small(x), y0_large(x))
+       62 +        # P0 polynomial
+       63 +        p0 = (1.0
+       64 +              + zsq * (-0.001098628627
+       65 +              + zsq * (0.00002734510407
+       66 +              + zsq * (-0.000002073370639
+       67 +              + zsq * 0.0000002093887211))))
+       68
+       69 +        # Q0 polynomial
+       70 +        q0 = (-0.01562499995
+       71 +              + zsq * (0.0001430488765
+       72 +              + zsq * (-0.000006911147651
+       73 +              + zsq * (0.0000007621095161
+       74 +              + zsq * (-0.0000000934945152)))))
+       75
+       76 +        chi = x - jnp.pi/4.0
+       77 +        return jnp.sqrt(2.0/(jnp.pi*x)) * (p0*jnp.sin(chi) + q0*jnp.cos(chi))
+       78 +
+       79 +    return jnp.where(x <= 3.0, y0_small(x), y0_large(x))
+       80 +
+       81 +
+       82  def _bessel_y1(x):
+       69 -    """Bessel function of the second kind, order 1."""
+       70 -    gamma = 0.5772156649015329
+       83 +    """Bessel function of the second kind, order 1.
+       84
+       85 +    Uses polynomial approximations from Abramowitz & Stegun / Numerical Recipes.
+       86 +    """
+       87      def y1_small(x):
+       88 +        # Approximation for 0 < x <= 3
+       89          j1 = _bessel_j1(x)
+       74 -        x2 = (x/2)**2
+       90 +        x3 = x / 3.0
+       91 +        x3sq = x3 * x3
+       92
+       76 -        # Series for Y1: (2/π)[J1(x)(ln(x/2) + γ) - 1/x + x/2 * Σ...]
+       77 -        series = (x/2) * (-0.5 +
+       78 -                          x2 / 2 * (1.0 - 0.5) -
+       79 -                          x2**2 / 12 * (1.5 - 1.0/3) +
+       80 -                          x2**3 / 144 * (11.0/6 - 0.25))
+       81 -        return (2/jnp.pi) * (j1 * (jnp.log(x/2) + gamma) - 1/x + series)
+       93 +        # Polynomial for the additive part
+       94 +        p = (0.00000000511
+       95 +             + x3sq * (-0.00000046995
+       96 +             + x3sq * (0.00017105
+       97 +             + x3sq * (-0.0249511
+       98 +             + x3sq * (1.2674115
+       99 +             + x3sq * 0.3674669)))))
+      100
+      101 +        return x * ((2.0/jnp.pi) * jnp.log(x/2.0) * j1 - 0.6366197724/x - 0.6366197724 + p)
+      102 +
+      103      def y1_large(x):
+       84 -        # Asymptotic for Y1
+       85 -        mu = 4.0  # 4*1^2 = 4 for order 1
+       86 -        x8 = 8 * x
+       87 -        P = 1 + (mu - 1)*(mu - 9)/(2 * x8**2)
+       88 -        Q = (mu - 1)/(1 * x8) - (mu - 1)*(mu - 9)*(mu - 25)/(6 * x8**3)
+       89 -        chi = x - 3*jnp.pi/4
+       90 -        return jnp.sqrt(2/(jnp.pi * x)) * (P * jnp.sin(chi) + Q * jnp.cos(chi))
+      104 +        # Approximation for x > 3
+      105 +        z = 3.0 / x
+      106 +        zsq = z * z
+      107
+       92 -    return jnp.where(x < 8.0, y1_small(x), y1_large(x))
+      108 +        # P1 polynomial
+      109 +        p1 = (1.0
+      110 +              + zsq * (0.00183105
+      111 +              + zsq * (-0.00003516396496
+      112 +              + zsq * (0.000002457520174
+      113 +              + zsq * (-0.0000002405338947)))))
+      114
+      115 +        # Q1 polynomial
+      116 +        q1 = (0.04687499995
+      117 +              + zsq * (-0.0002002690873
+      118 +              + zsq * (0.000008449199096
+      119 +              + zsq * (-0.00000088228987
+      120 +              + zsq * 0.0000001057874120))))
+      121
+      122 +        chi = x - 3.0*jnp.pi/4.0
+      123 +        return jnp.sqrt(2.0/(jnp.pi*x)) * (p1*jnp.sin(chi) + q1*jnp.cos(chi))
+      124 +
+      125 +    return jnp.where(x <= 3.0, y1_small(x), y1_large(x))
+      126 +
+      127 +
+      128  def compute_eigenvalues(omega: float, c1: float, c2: float,
+      129                          rho1: float, rho2: float, H: float):
+      130      """
+
+● Bash(source venv312/bin/activate && python -c " timeout: 30s
+      import numpy as np…)
+  ⎿  WARNING:2026-01-21 20:05:02,252:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     x       scipy_Y0         jax_Y0           rel_error
+     … +11 lines (ctrl+o to expand)
+
+● The polynomial coefficients I used are incorrect. Let me use scipy's Bessel functions via JAX's pure_callback for accurate results while maintaining
+  autodiff capability.
+
+● Update(pekeris_jax.py)
+  ⎿  Added 28 lines, removed 82 lines
+       9  import jax.numpy as jnp
+      10  from jax.scipy.special import bessel_jn
+      11  from scipy.optimize import brentq
+      12 +from scipy import special as sp
+      13  import numpy as np
+      14
+      15  # Enable 64-bit precision (important for accuracy)
+     ...
+      18
+      19  def _bessel_j0(x):
+      20      """Bessel function of the first kind, order 0."""
+      20 -    # bessel_jn returns shape (v+1, *x.shape), so [0] gives J0
+      21      return bessel_jn(x, v=0)[0]
+      22
+      23
+     ...
+       26      return bessel_jn(x, v=1)[1]
+       27
+       28
+       29 +# Define Y0 with custom autodiff rules using JAX's custom_vjp
+       30 +@jax.custom_vjp
+       31  def _bessel_y0(x):
+       30 -    """Bessel function of the second kind, order 0.
+       32 +    """Bessel function of the second kind, order 0."""
+       33 +    return jax.pure_callback(
+       34 +        lambda x: sp.yv(0, x),
+       35 +        jax.ShapeDtypeStruct(jnp.shape(x), jnp.float64),
+       36 +        x
+       37 +    )
+       38
+       32 -    Uses polynomial approximations from Abramowitz & Stegun / Numerical Recipes.
+       33 -    Accurate to about 1e-8 relative error.
+       34 -    """
+       35 -    # For x <= 3: use polynomial fit to Y0(x) - (2/π)ln(x/2)J0(x)
+       36 -    # For x > 3: use asymptotic form with polynomial corrections
+       39
+       38 -    def y0_small(x):
+       39 -        # Approximation for 0 < x <= 3
+       40 -        # Y0(x) ≈ (2/π)ln(x/2)J0(x) + polynomial
+       41 -        j0 = _bessel_j0(x)
+       42 -        x3 = x / 3.0
+       43 -        x3sq = x3 * x3
+       40 +def _bessel_y0_fwd(x):
+       41 +    return _bessel_y0(x), x
+       42
+       45 -        # Polynomial coefficients for the "P" part
+       46 -        p = (- 0.0000000077
+       47 -             + x3sq * (0.0000055274
+       48 -             + x3sq * (-0.0009512680
+       49 -             + x3sq * (0.0678336170
+       50 -             + x3sq * (-0.7489575680
+       51 -             + x3sq * 0.3674669220)))))
+       43
+       53 -        return (2.0/jnp.pi) * jnp.log(x/2.0) * j0 + 0.36746691 + p
+       44 +def _bessel_y0_bwd(x, g):
+       45 +    # d/dx Y0(x) = -Y1(x)
+       46 +    return (g * (-_bessel_y1(x)),)
+       47
+       55 -    def y0_large(x):
+       56 -        # Approximation for x > 3
+       57 -        # Y0(x) ≈ sqrt(2/(πx)) * [P0*sin(χ) + Q0*cos(χ)]
+       58 -        # where χ = x - π/4
+       59 -        z = 3.0 / x
+       60 -        zsq = z * z
+       48
+       62 -        # P0 polynomial
+       63 -        p0 = (1.0
+       64 -              + zsq * (-0.001098628627
+       65 -              + zsq * (0.00002734510407
+       66 -              + zsq * (-0.000002073370639
+       67 -              + zsq * 0.0000002093887211))))
+       49 +_bessel_y0.defvjp(_bessel_y0_fwd, _bessel_y0_bwd)
+       50
+       69 -        # Q0 polynomial
+       70 -        q0 = (-0.01562499995
+       71 -              + zsq * (0.0001430488765
+       72 -              + zsq * (-0.000006911147651
+       73 -              + zsq * (0.0000007621095161
+       74 -              + zsq * (-0.0000000934945152)))))
+       51
+       76 -        chi = x - jnp.pi/4.0
+       77 -        return jnp.sqrt(2.0/(jnp.pi*x)) * (p0*jnp.sin(chi) + q0*jnp.cos(chi))
+       78 -
+       79 -    return jnp.where(x <= 3.0, y0_small(x), y0_large(x))
+       80 -
+       81 -
+       52 +@jax.custom_vjp
+       53  def _bessel_y1(x):
+       83 -    """Bessel function of the second kind, order 1.
+       54 +    """Bessel function of the second kind, order 1."""
+       55 +    return jax.pure_callback(
+       56 +        lambda x: sp.yv(1, x),
+       57 +        jax.ShapeDtypeStruct(jnp.shape(x), jnp.float64),
+       58 +        x
+       59 +    )
+       60
+       85 -    Uses polynomial approximations from Abramowitz & Stegun / Numerical Recipes.
+       86 -    """
+       87 -    def y1_small(x):
+       88 -        # Approximation for 0 < x <= 3
+       89 -        j1 = _bessel_j1(x)
+       90 -        x3 = x / 3.0
+       91 -        x3sq = x3 * x3
+       61
+       93 -        # Polynomial for the additive part
+       94 -        p = (0.00000000511
+       95 -             + x3sq * (-0.00000046995
+       96 -             + x3sq * (0.00017105
+       97 -             + x3sq * (-0.0249511
+       98 -             + x3sq * (1.2674115
+       99 -             + x3sq * 0.3674669)))))
+       62 +def _bessel_y1_fwd(x):
+       63 +    return _bessel_y1(x), x
+       64
+      101 -        return x * ((2.0/jnp.pi) * jnp.log(x/2.0) * j1 - 0.6366197724/x - 0.6366197724 + p)
+       65
+      103 -    def y1_large(x):
+      104 -        # Approximation for x > 3
+      105 -        z = 3.0 / x
+      106 -        zsq = z * z
+       66 +def _bessel_y1_bwd(x, g):
+       67 +    # d/dx Y1(x) = Y0(x) - Y1(x)/x
+       68 +    return (g * (_bessel_y0(x) - _bessel_y1(x) / x),)
+       69
+      108 -        # P1 polynomial
+      109 -        p1 = (1.0
+      110 -              + zsq * (0.00183105
+      111 -              + zsq * (-0.00003516396496
+      112 -              + zsq * (0.000002457520174
+      113 -              + zsq * (-0.0000002405338947)))))
+       70
+      115 -        # Q1 polynomial
+      116 -        q1 = (0.04687499995
+      117 -              + zsq * (-0.0002002690873
+      118 -              + zsq * (0.000008449199096
+      119 -              + zsq * (-0.00000088228987
+      120 -              + zsq * 0.0000001057874120))))
+       71 +_bessel_y1.defvjp(_bessel_y1_fwd, _bessel_y1_bwd)
+       72
+      122 -        chi = x - 3.0*jnp.pi/4.0
+      123 -        return jnp.sqrt(2.0/(jnp.pi*x)) * (p1*jnp.sin(chi) + q1*jnp.cos(chi))
+       73
+      125 -    return jnp.where(x <= 3.0, y1_small(x), y1_large(x))
+      126 -
+      127 -
+       74  def compute_eigenvalues(omega: float, c1: float, c2: float,
+       75                          rho1: float, rho2: float, H: float):
+       76      """
+
+● Bash(source venv312/bin/activate && python -c " timeout: 30s
+      import jax…)
+  ⎿  WARNING:2026-01-21 20:06:08,813:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     Y0(5.0) = -0.3085176252490338
+     scipy Y0(5.0) = -0.3085176252490338
+
+● Now let me fix the callback to handle arrays properly and run the full comparison.
+
+● Update(pekeris_jax.py)
+  ⎿  Added 36 lines, removed 15 lines
+      26      return bessel_jn(x, v=1)[1]
+      27
+      28
+      29 -# Define Y0 with custom autodiff rules using JAX's custom_vjp
+      29 +# Define Y0 and Y1 with custom autodiff rules
+      30 +# We need to handle the mutual recursion in the derivatives carefully
+      31 +
+      32 +def _scipy_y0(x):
+      33 +    """Call scipy's Y0 via pure_callback."""
+      34 +    x = jnp.asarray(x)
+      35 +    return jax.pure_callback(
+      36 +        lambda x: np.asarray(sp.yv(0, np.asarray(x))),
+      37 +        jax.ShapeDtypeStruct(x.shape, jnp.float64),
+      38 +        x,
+      39 +        vectorized=True
+      40 +    )
+      41 +
+      42 +
+      43 +def _scipy_y1(x):
+      44 +    """Call scipy's Y1 via pure_callback."""
+      45 +    x = jnp.asarray(x)
+      46 +    return jax.pure_callback(
+      47 +        lambda x: np.asarray(sp.yv(1, np.asarray(x))),
+      48 +        jax.ShapeDtypeStruct(x.shape, jnp.float64),
+      49 +        x,
+      50 +        vectorized=True
+      51 +    )
+      52 +
+      53 +
+      54  @jax.custom_vjp
+      55  def _bessel_y0(x):
+      56      """Bessel function of the second kind, order 0."""
+      33 -    return jax.pure_callback(
+      34 -        lambda x: sp.yv(0, x),
+      35 -        jax.ShapeDtypeStruct(jnp.shape(x), jnp.float64),
+      36 -        x
+      37 -    )
+      57 +    return _scipy_y0(x)
+      58
+      59
+      60  def _bessel_y0_fwd(x):
+      41 -    return _bessel_y0(x), x
+      61 +    y0 = _scipy_y0(x)
+      62 +    return y0, x
+      63
+      64
+      65  def _bessel_y0_bwd(x, g):
+      66      # d/dx Y0(x) = -Y1(x)
+      46 -    return (g * (-_bessel_y1(x)),)
+      67 +    y1 = _scipy_y1(x)
+      68 +    return (g * (-y1),)
+      69
+      70
+      71  _bessel_y0.defvjp(_bessel_y0_fwd, _bessel_y0_bwd)
+     ...
+      74  @jax.custom_vjp
+      75  def _bessel_y1(x):
+      76      """Bessel function of the second kind, order 1."""
+      55 -    return jax.pure_callback(
+      56 -        lambda x: sp.yv(1, x),
+      57 -        jax.ShapeDtypeStruct(jnp.shape(x), jnp.float64),
+      58 -        x
+      59 -    )
+      77 +    return _scipy_y1(x)
+      78
+      79
+      80  def _bessel_y1_fwd(x):
+      63 -    return _bessel_y1(x), x
+      81 +    y1 = _scipy_y1(x)
+      82 +    return y1, x
+      83
+      84
+      85  def _bessel_y1_bwd(x, g):
+      86      # d/dx Y1(x) = Y0(x) - Y1(x)/x
+      68 -    return (g * (_bessel_y0(x) - _bessel_y1(x) / x),)
+      87 +    y0 = _scipy_y0(x)
+      88 +    y1 = _scipy_y1(x)
+      89 +    return (g * (y0 - y1 / x),)
+      90
+      91
+      92  _bessel_y1.defvjp(_bessel_y1_fwd, _bessel_y1_bwd)
+
+● Bash(source venv312/bin/activate && python pekeris_jax.py 2>&1)
+  ⎿  Error: Exit code 1
+     WARNING:2026-01-21 20:06:43,872:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     Pekeris Waveguide: JAX vs Original (discrete modes only)
+     ============================================================
+     Number of modes: 4
+
+     Pressure comparison:
+     ------------------------------------------------------------
+     Traceback (most recent call last):
+       File "/home/jzitelli/GitHub/pekeris-waveguide-solver/pekeris_jax.py", line 469, in <module>
+     … +27 lines (ctrl+o to see all)
+
+● Update(pekeris_jax.py)
+  ⎿  Added 2 lines, removed 2 lines
+      36          lambda x: np.asarray(sp.yv(0, np.asarray(x))),
+      37          jax.ShapeDtypeStruct(x.shape, jnp.float64),
+      38          x,
+      39 -        vectorized=True
+      39 +        vmap_method='broadcast_all'
+      40      )
+      41
+      42
+     ...
+      47          lambda x: np.asarray(sp.yv(1, np.asarray(x))),
+      48          jax.ShapeDtypeStruct(x.shape, jnp.float64),
+      49          x,
+      50 -        vectorized=True
+      50 +        vmap_method='broadcast_all'
+      51      )
+      52
+      53
+
+● Bash(source venv312/bin/activate && python pekeris_jax.py 2>&1)
+  ⎿  WARNING:2026-01-21 20:07:03,263:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     Pekeris Waveguide: JAX vs Original (discrete modes only)
+     … +45 lines (ctrl+o to expand)
+
+● There's still an error at (r=500, z=75). Let me debug by checking the Bessel function values directly at that point.
+
+● Bash(source venv312/bin/activate && python -c " timeout: 30s
+      import numpy as np…)
+  ⎿  Eigenvalues and wavenumbers:
+       Mode 1: k_r=0.132100, k1_z=0.018093, k2_z=0.071448
+       Mode 2: k_r=0.128223, k1_z=0.036559, k2_z=0.063996
+     … +9 lines (ctrl+o to expand)
+
+● Bash(source venv312/bin/activate && python -c " timeout: 30s
+      import jax…)
+  ⎿  WARNING:2026-01-21 20:07:48,828:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     JAX Bessel values:
+     … +18 lines (ctrl+o to expand)
+
+● Found it! The problem is JAX's bessel_jn function which is inaccurate for large arguments. Let me check the n_iter parameter.
+
+● Bash(source venv312/bin/activate && python -c " timeout: 30s
+      import jax…)
+  ⎿  WARNING:2026-01-21 20:08:10,988:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     Testing J0(66.050038):
+     … +5 lines (ctrl+o to expand)
+
+● The JAX bessel_jn needs more iterations for large arguments. Let me fix this.
+
+● Update(pekeris_jax.py)
+  ⎿  Added 7 lines, removed 3 lines
+      17
+      18
+      19  def _bessel_j0(x):
+      20 -    """Bessel function of the first kind, order 0."""
+      21 -    return bessel_jn(x, v=0)[0]
+      20 +    """Bessel function of the first kind, order 0.
+      21
+      22 +    Uses higher n_iter for accuracy at large arguments.
+      23 +    """
+      24 +    # n_iter=100 needed for arguments up to ~100, n_iter=200 for larger
+      25 +    return bessel_jn(x, v=0, n_iter=150)[0]
+      26
+      27 +
+      28  def _bessel_j1(x):
+      29      """Bessel function of the first kind, order 1."""
+      26 -    return bessel_jn(x, v=1)[1]
+      30 +    return bessel_jn(x, v=1, n_iter=150)[1]
+      31
+      32
+      33  # Define Y0 and Y1 with custom autodiff rules
+
+● Bash(source venv312/bin/activate && python pekeris_jax.py 2>&1)
+  ⎿  WARNING:2026-01-21 20:08:44,160:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     Pekeris Waveguide: JAX vs Original (discrete modes only)
+     … +45 lines (ctrl+o to expand)
+
+● All tests pass with machine precision accuracy. The JAX autodiff gradients match the manually-coded gradients perfectly.
+
+  Let me add a quick benchmark to show the code works for a grid computation too.
+
+● Bash(source venv312/bin/activate && python -c "
+      from pekeris_jax import PekerisWaveguideJAX…)
+  ⎿  WARNING:2026-01-21 20:09:06,094:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed.
+     Falling back to cpu.
+     PekerisWaveguideJAX(omega=200.0, c1=1500.0, c2=1800.0, rho1=1000.0, rho2=1800.0, H=150.0, z_s=30.0, n_modes=4)
+     … +6 lines (ctrl+o to expand)
+
+● The JAX implementation is working. Here's a summary of what was created:
+
+  Summary
+
+  Created pekeris_jax.py with a JAX-based Pekeris waveguide solver that uses automatic differentiation for gradients instead of manual derivative code.
+
+  Key features:
+  - PekerisWaveguideJAX class with same interface as the original
+  - pressure(r, z) - compute pressure at a point
+  - pressure_gradient(r, z) - gradients via JAX autodiff (no manual derivatives!)
+  - pressure_field(r_array, z_array) - vectorized grid computation using vmap
+
+  Code reduction: The ~100 lines of manually-coded derivative functions in the original are replaced by ~10 lines of JAX gradient setup.
+
+  Accuracy: Results match the original implementation to machine precision (~1e-15 relative error).
+
+  Technical notes:
+  1. JAX's bessel_jn needs n_iter=150 for accuracy at large arguments (k_r*r > 50)
+  2. Y0/Y1 Bessel functions use jax.pure_callback to scipy with custom_vjp for autodiff
+  3. Complex gradients are handled by differentiating real and imaginary parts separately
+
+  Run the comparison with:
+  python pekeris_jax.py
+
+✻ Crunched for 7m 11s
+
+❯ i copied in the example / visualization code from pekeris.py and it looks good although i did some tweaking of vlim values (maybe their is still some
+  numerical disagreement between jax and scipy around max values that affected this).  let's commit this now
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +10 lines (ctrl+o to expand)
+
+● Bash(git diff --stat)
+  ⎿  (No content)
+
+● Bash(git log --oneline -5)
+  ⎿  b8429f2 add animated GIF visualization of time-harmonic pressure field
+     3855271 Update README.md
+     adeb25f add example output image
+     … +2 lines (ctrl+o to expand)
+
+● Bash(git add pekeris_jax.py && git commit -m "add JAX-based solver with autodiff for gradients…)
+  ⎿  [main 5e7acd4] add JAX-based solver with autodiff for gradients
+      1 file changed, 696 insertions(+)
+      create mode 100644 pekeris_jax.py
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is ahead of 'origin/main' by 1 commit.
+       (use "git push" to publish your local commits)
+     … +10 lines (ctrl+o to expand)
+
+● Committed as 5e7acd4. The branch is 1 commit ahead of origin/main.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ push it                                                                                                                                            ↵ send
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  50 files +0 -0
