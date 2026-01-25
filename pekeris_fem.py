@@ -504,6 +504,9 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
     p_abs = np.abs(p_values)
     p_max = np.max(p_abs)
     p_db = 20 * np.log10(p_abs / p_max + 1e-20)
+    # Clamp dB values before tessellation to avoid interpolation artifacts
+    # at the pressure-release boundary where p→0 gives p_db→-∞
+    p_db = np.clip(p_db, -60, 0)
     grid.point_data["p (dB)"] = p_db
 
     # Subdivide the grid for smooth visualization of higher-order data
