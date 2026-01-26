@@ -245,15 +245,15 @@ class PekerisWaveguide:
         """
         # Definite region integrals
         int_real, _ = quad(self._integrand_definite_real, self.branch_start, self.k1,
-                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                          args=(r, z), limit=200, epsrel=self.quadrature_rtol)
         int_imag, _ = quad(self._integrand_definite_imag, self.branch_start, self.k1,
-                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                          args=(r, z), limit=200, epsrel=self.quadrature_rtol)
 
         # Indefinite region integral (evanescent)
         # Cutoff chosen so that K0 argument is large enough for negligible contribution
         cutoff = np.sqrt((100.0 / r)**2 + self.k1_sqrd)
         int_indef, _ = quad(self._integrand_indefinite, self.k1, cutoff,
-                           args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                           args=(r, z), limit=200, epsrel=self.quadrature_rtol)
 
         # Combine using H0^(2) = J0 - i*Y0 convention (consistent with discrete modes)
         # The discrete modes use H0^(2) in hankel2_0(), so we must negate the Y0 and K0 parts

@@ -150,7 +150,7 @@ def solve_pekeris_fem(
     z_s: float = 30.0,
     r_max: float = 1000.0,
     z_max: float = 225.0,
-    r_source: float = 5.0,
+    r_source: float = 1.0,
     pml_r: float = 100.0,
     pml_z: float = 100.0,
     lc_fine: float = 2.0,
@@ -859,7 +859,7 @@ if __name__ == "__main__":
     parser.add_argument("--pml-z", type=float, default=100.0, help="Vertical PML thickness (m)")
     parser.add_argument("--lc-fine", type=float, default=2.0, help="Fine mesh size (m)")
     parser.add_argument("--lc-coarse", type=float, default=15.0, help="Coarse mesh size (m)")
-    parser.add_argument("--degree", type=int, default=2, help="FEM polynomial degree")
+    parser.add_argument("--degree", type=int, default=3, help="FEM polynomial degree")
     parser.add_argument("--pml-alpha", type=float, default=2.0, help="PML strength")
     parser.add_argument("--no-viz", action="store_true", help="Skip visualization")
     parser.add_argument("--compare", action="store_true", help="Compare with analytical solution")
