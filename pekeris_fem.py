@@ -660,7 +660,7 @@ def extract_field_on_grid(mesh_data, uh, r_array, z_array):
     return P
 
 
-def compare_with_analytical(mesh_data, uh, params, nr=100, nz=50, r_min=10.0):
+def compare_with_analytical(mesh_data, uh, params, nr=200, nz=100, r_min=10.0):
     """
     Compare FEM solution with analytical Pekeris solution.
 
@@ -694,7 +694,7 @@ def compare_with_analytical(mesh_data, uh, params, nr=100, nz=50, r_min=10.0):
 
     # Create analytical solution
     print("\nComputing analytical solution for comparison...")
-    wg = PekerisWaveguide(omega, c1, c2, rho1, rho2, H, z_s, discrete_modes_only=True)
+    wg = PekerisWaveguide(omega, c1, c2, rho1, rho2, H, z_s, discrete_modes_only=False)
     print(f"  Number of discrete modes: {wg.n_modes}")
 
     # Grid for comparison (stay within physical domain, not PML)
@@ -705,7 +705,7 @@ def compare_with_analytical(mesh_data, uh, params, nr=100, nz=50, r_min=10.0):
     P_fem = extract_field_on_grid(mesh_data, uh, r_array, z_array)
 
     print(f"  Computing analytical solution...")
-    P_analytical = wg.pressure_field(r_array, z_array, show_progress=False, n_jobs=1)
+    P_analytical = wg.pressure_field(r_array, z_array, show_progress=True)
 
     # The FEM solution needs scaling to match the analytical solution
     # The analytical solution is for a point source with specific normalization

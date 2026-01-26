@@ -279,7 +279,7 @@ def main():
         pml_z=100.0,
         lc_fine=2.0,
         lc_coarse=15.0,
-        degree=2,
+        degree=3,
         pml_alpha=2.0,
     )
 
