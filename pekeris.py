@@ -245,20 +245,21 @@ class PekerisWaveguide:
         """
         # Definite region integrals
         int_real, _ = quad(self._integrand_definite_real, self.branch_start, self.k1,
-                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                          args=(r, z), limit=200, epsrel=self.quadrature_rtol)
         int_imag, _ = quad(self._integrand_definite_imag, self.branch_start, self.k1,
-                          args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                          args=(r, z), limit=200, epsrel=self.quadrature_rtol)
 
         # Indefinite region integral (evanescent)
         # Cutoff chosen so that K0 argument is large enough for negligible contribution
         cutoff = np.sqrt((100.0 / r)**2 + self.k1_sqrd)
         int_indef, _ = quad(self._integrand_indefinite, self.k1, cutoff,
-                           args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                           args=(r, z), limit=200, epsrel=self.quadrature_rtol)
 
-        # Combine: the indefinite integral contributes to imaginary part
-        integral = complex(int_real, int_imag + int_indef)
+        # Combine using H0^(2) = J0 - i*Y0 convention (consistent with discrete modes)
+        # The discrete modes use H0^(2) in hankel2_0(), so we must negate the Y0 and K0 parts
+        integral = complex(int_real, -(int_imag + int_indef))
 
-        # Scale factor and phase adjustment (matching Fortran)
+        # Scale factor and phase adjustment
         # The factor 2*M comes from the residue calculation
         return 2 * self.M * complex(-integral.imag, integral.real)
 
@@ -275,7 +276,8 @@ class PekerisWaveguide:
         int_indef_dr, _ = quad(self._integrand_indefinite_dr, self.k1, cutoff,
                               args=(r, z), limit=100, epsrel=self.quadrature_rtol)
 
-        integral_dr = complex(int_real_dr, int_imag_dr + int_indef_dr)
+        # Use H0^(2) = J0 - i*Y0 convention (consistent with discrete modes)
+        integral_dr = complex(int_real_dr, -(int_imag_dr + int_indef_dr))
         grad_r = 2 * self.M * complex(-integral_dr.imag, integral_dr.real)
 
         # d/dz integrals
@@ -286,7 +288,8 @@ class PekerisWaveguide:
         int_indef_dz, _ = quad(self._integrand_indefinite_dz, self.k1, cutoff,
                               args=(r, z), limit=100, epsrel=self.quadrature_rtol)
 
-        integral_dz = complex(int_real_dz, int_imag_dz + int_indef_dz)
+        # Use H0^(2) = J0 - i*Y0 convention (consistent with discrete modes)
+        integral_dz = complex(int_real_dz, -(int_imag_dz + int_indef_dz))
         grad_z = 2 * self.M * complex(-integral_dz.imag, integral_dz.real)
 
         return grad_r, grad_z

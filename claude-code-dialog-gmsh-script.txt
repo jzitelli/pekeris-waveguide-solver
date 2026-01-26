@@ -1,0 +1,510 @@
+
+ ▐▛███▜▌   Claude Code v2.1.16
+▝▜█████▛▘  Opus 4.5 · Claude Pro
+  ▘▘ ▝▝    ~/GitHub/pekeris-waveguide-solver
+
+❯ take a look at @demo_gmsh.  i want to create a similar script to generate a gmsh model (for use with dolfinx) representing a pekeris
+  waveguide (the model in @pekeris.py).  it should be 2D, representing a cross section of the axisymetric geometry.  i want the geometry to
+  have a circular exclusion around the source (this is where source boundary conditions are prescribed).  don't worry about pml layers for
+  now.
+  ⎿  Read pekeris.py (721 lines)
+
+● Let me first read the demo_gmsh.py file to understand the structure.
+
+● Read(demo_gmsh.py)
+  ⎿  Read 278 lines
+
+● Now I understand the structure. I'll create a script for generating a 2D Pekeris waveguide mesh with:
+  - Water layer (top)
+  - Sediment layer (bottom)
+  - Semicircular exclusion around the source at (r=0, z=z_s)
+
+● Write(pekeris_gmsh.py)
+  ⎿  Wrote 338 lines to pekeris_gmsh.py
+      1 """
+      2 Gmsh mesh generation for Pekeris waveguide.
+      3 Generates a 2D mesh representing an axisymmetric cross-section of the Pekeris
+      4 waveguide for use with DOLFINx. The geometry consists of:
+      5 - Water layer (depth 0 to H)
+      6 - Sediment layer (depth H to z_max)
+      7 - Semicircular exclusion around the source at (r=0, z=z_s)
+      8 Coordinate system:
+     … +328 lines (ctrl+o to expand)
+
+● Let me test the script to make sure it works.
+
+● Bash(python pekeris_gmsh.py --help)
+  ⎿  usage: pekeris_gmsh.py [-h] [--H H] [--z-s Z_S] [--r-max R_MAX]
+                            [--z-max Z_MAX] [--r-source R_SOURCE]
+                            [--lc-fine LC_FINE] [--lc-coarse LC_COARSE]
+     … +17 lines (ctrl+o to expand)
+
+● Bash(python pekeris_gmsh.py --output test_mesh 2>&1) timeout: 1m 0s
+  ⎿  Error: Exit code 1
+     Creating Pekeris waveguide mesh:
+       Water depth H = 150.0 m
+       Source depth z_s = 30.0 m
+       Domain: r in [0, 1000.0] m, z in [0, 225.0] m
+       Source exclusion radius = 5.0 m
+       Mesh sizes: fine=2.0 m, coarse=20.0 m
+     Traceback (most recent call last):
+       File "/home/jzitelli/GitHub/pekeris-waveguide-solver/pekeris_gmsh.py", line 309, in <module>
+         model = gmsh_pekeris_waveguide(
+     … +5 lines (ctrl+o to see all)
+
+● Let me fix the getCenterOfMass call - it returns 3 values, not 4.
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 1 line, removed 1 line
+      114
+      115      for dim, tag in surfaces:
+      116          # Get the center of mass to determine which layer this surface belongs to
+      117 -        mass, com_x, com_y, com_z = occ.getCenterOfMass(dim, tag)
+      117 +        com_x, com_y, com_z = occ.getCenterOfMass(dim, tag)
+      118          if com_y < H:
+      119              water_tags.append(tag)
+      120          else:
+
+● Bash(python pekeris_gmsh.py --output test_mesh 2>&1) timeout: 1m 0s
+  ⎿  Info    : Meshing 1D...
+     Info    : [  0%] Meshing curve 1 (Line)
+     Info    : [ 10%] Meshing curve 2 (Ellipse)
+     … +23 lines (ctrl+o to expand)
+
+● The mesh was generated successfully. Let me verify the physical groups are correctly set up by checking what was created.
+
+● Bash(python -c "
+      import gmsh…)
+  ⎿  Info    : Reading 'test_mesh.msh'...
+     Info    : 21 entities
+     Info    : 851 nodes
+     … +11 lines (ctrl+o to expand)
+
+● All physical groups are correctly assigned. Let me clean up the test file.
+
+● Bash(rm test_mesh.msh)
+  ⎿  (No content)
+
+● I've created pekeris_gmsh.py which generates a 2D Gmsh mesh for the Pekeris waveguide. The geometry includes:
+
+  Domains (2D):
+  - WATER_DOMAIN (tag 1): Water layer from z=0 to z=H
+  - SEDIMENT_DOMAIN (tag 2): Sediment layer from z=H to z=z_max
+
+  Boundaries (1D):
+  - SOURCE_BOUNDARY (tag 10): Semicircular exclusion around source at (r=0, z=z_s)
+  - TOP_BOUNDARY (tag 11): Pressure-release surface (z=0)
+  - BOTTOM_BOUNDARY (tag 12): Truncation boundary (z=z_max)
+  - RIGHT_BOUNDARY (tag 13): Far-field boundary (r=r_max)
+  - INTERFACE (tag 14): Water-sediment interface (z=H)
+  - AXIS_BOUNDARY (tag 15): Axis of symmetry (r=0)
+
+  Features:
+  - Mesh refinement near the source using distance-based threshold fields
+  - Default parameters match the example in pekeris.py (H=150m, z_s=30m)
+  - Optional XDMF export for DOLFINx (use --xdmf flag)
+  - Optional Gmsh GUI viewing (use --view flag)
+
+  Usage:
+  # Basic usage with defaults
+  python pekeris_gmsh.py
+
+  # Custom parameters
+  python pekeris_gmsh.py --H 100 --z-s 20 --r-max 500 --lc-fine 1.0
+
+  # View in Gmsh GUI
+  python pekeris_gmsh.py --view
+
+  # Export to XDMF for DOLFINx
+  python pekeris_gmsh.py --xdmf --output my_mesh
+
+✻ Crunched for 1m 43s
+
+❯ looks ok, commit this
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +18 lines (ctrl+o to expand)
+
+● Bash(git diff --staged)
+  ⎿  (No content)
+
+● Bash(git log --oneline -5)
+  ⎿  5e7acd4 add JAX-based solver with autodiff for gradients
+     b8429f2 add animated GIF visualization of time-harmonic pressure field
+     3855271 Update README.md
+     … +2 lines (ctrl+o to expand)
+
+● Bash(git add pekeris_gmsh.py && git commit -m "add Gmsh mesh generator for Pekeris waveguide…)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ create and switch to a new branch called "fem" and then commit
+
+● Bash(git checkout -b fem)
+  ⎿  Switched to a new branch 'fem'
+
+● Bash(git add pekeris_gmsh.py && git commit -m "add Gmsh mesh generator for Pekeris waveguide…)
+  ⎿  [fem d110050] add Gmsh mesh generator for Pekeris waveguide
+      1 file changed, 337 insertions(+)
+      create mode 100644 pekeris_gmsh.py
+
+● Bash(git status)
+  ⎿  On branch fem
+     Changes not staged for commit:
+       (use "git add <file>..." to update what will be committed)
+     … +15 lines (ctrl+o to expand)
+
+● Done. Created branch fem and committed pekeris_gmsh.py (commit d110050).
+
+❯ now add the pml layers
+
+● Read(pekeris_gmsh.py)
+  ⎿  Read 338 lines
+
+● I'll add PML layers to the mesh. The PML regions will be:
+  - Right PML (water and sediment)
+  - Bottom PML
+  - Corner PML (where right and bottom meet)
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 9 lines, removed 3 lines
+      16  import numpy as np
+      17
+      18
+      19 -# Physical tag constants
+      19 +# Physical tag constants for domains
+      20  WATER_DOMAIN = 1
+      21  SEDIMENT_DOMAIN = 2
+      22 +PML_WATER_RIGHT = 3     # PML in water layer (right side)
+      23 +PML_SEDIMENT_RIGHT = 4  # PML in sediment layer (right side)
+      24 +PML_BOTTOM = 5          # PML at bottom
+      25 +PML_CORNER = 6          # PML corner region
+      26 +
+      27 +# Physical tag constants for boundaries
+      28  SOURCE_BOUNDARY = 10
+      29  TOP_BOUNDARY = 11       # Pressure-release surface (z=0)
+      24 -BOTTOM_BOUNDARY = 12    # Truncation boundary (z=z_max)
+      25 -RIGHT_BOUNDARY = 13     # Far-field boundary (r=r_max)
+      30 +BOTTOM_BOUNDARY = 12    # Truncation boundary (z=z_max + pml_z)
+      31 +RIGHT_BOUNDARY = 13     # Far-field boundary (r=r_max + pml_r)
+      32  INTERFACE = 14          # Water-sediment interface (z=H)
+      33  AXIS_BOUNDARY = 15      # Axis of symmetry (r=0)
+      34
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 13 lines, removed 3 lines
+      41      r_max: float = 1000.0,
+      42      z_max: float = 225.0,
+      43      r_source: float = 5.0,
+      44 +    pml_r: float = 100.0,
+      45 +    pml_z: float = 100.0,
+      46      lc_fine: float = 2.0,
+      47      lc_coarse: float = 20.0,
+      48  ) -> gmsh.model:
+      47 -    """Create a Gmsh model of a Pekeris waveguide cross-section.
+      49 +    """Create a Gmsh model of a Pekeris waveguide cross-section with PML.
+      50
+      51      Parameters
+      52      ----------
+     ...
+      59      z_s : float
+      60          Source depth (m), must be < H.
+      61      r_max : float
+      60 -        Maximum radial extent of domain (m).
+      62 +        Maximum radial extent of physical domain (m), before PML.
+      63      z_max : float
+      62 -        Maximum depth of domain (m), must be > H.
+      64 +        Maximum depth of physical domain (m), must be > H, before PML.
+      65      r_source : float
+      66          Radius of circular exclusion around source (m).
+      67 +    pml_r : float
+      68 +        Thickness of radial PML layer (m). Set to 0 to disable.
+      69 +    pml_z : float
+      70 +        Thickness of vertical PML layer (m). Set to 0 to disable.
+      71      lc_fine : float
+      72          Characteristic length (mesh size) near the source.
+      73      lc_coarse : float
+     ...
+      85      if r_source >= r_max:
+      86          raise ValueError(f"Source radius r_source={r_source} must be less than r_max={r_max}")
+      87
+      88 +    # Total domain extent including PML
+      89 +    r_total = r_max + pml_r
+      90 +    z_total = z_max + pml_z
+      91 +
+      92      model.add(name)
+      93      model.setCurrent(name)
+      94
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 67 lines, removed 10 lines
+       95      # Use OpenCASCADE kernel for boolean operations
+       96      occ = model.occ
+       97
+       98 -    # Create water layer rectangle (from surface to interface)
+       99 -    # Rectangle: corner at (0, 0), width r_max, height H
+       98 +    # Create physical domain rectangles
+       99 +    # Water layer: (0, 0) to (r_max, H)
+      100      water_rect = occ.addRectangle(0, 0, 0, r_max, H)
+      101 -
+      102 -    # Create sediment layer rectangle (from interface to bottom)
+      101 +    # Sediment layer: (0, H) to (r_max, z_max)
+      102      sediment_rect = occ.addRectangle(0, H, 0, r_max, z_max - H)
+      103
+      104 +    # Create PML rectangles
+      105 +    pml_rects = []
+      106 +    if pml_r > 0:
+      107 +        # Right PML for water: (r_max, 0) to (r_total, H)
+      108 +        pml_water_right_rect = occ.addRectangle(r_max, 0, 0, pml_r, H)
+      109 +        pml_rects.append(('pml_water_right', pml_water_right_rect))
+      110 +        # Right PML for sediment: (r_max, H) to (r_total, z_max)
+      111 +        pml_sediment_right_rect = occ.addRectangle(r_max, H, 0, pml_r, z_max - H)
+      112 +        pml_rects.append(('pml_sediment_right', pml_sediment_right_rect))
+      113 +
+      114 +    if pml_z > 0:
+      115 +        # Bottom PML: (0, z_max) to (r_max, z_total)
+      116 +        pml_bottom_rect = occ.addRectangle(0, z_max, 0, r_max, pml_z)
+      117 +        pml_rects.append(('pml_bottom', pml_bottom_rect))
+      118 +
+      119 +    if pml_r > 0 and pml_z > 0:
+      120 +        # Corner PML: (r_max, z_max) to (r_total, z_total)
+      121 +        pml_corner_rect = occ.addRectangle(r_max, z_max, 0, pml_r, pml_z)
+      122 +        pml_rects.append(('pml_corner', pml_corner_rect))
+      123 +
+      124      # Create semicircular exclusion around source at (0, z_s)
+      106 -    # We create a disk and then cut it to get a semicircle (r >= 0)
+      125      source_disk = occ.addDisk(0, z_s, 0, r_source, r_source)
+      126
+      127      # Cut the source exclusion from the water layer
+     ...
+      134          raise RuntimeError(f"Expected 1 water surface after cut, got {len(water_surfaces)}")
+      135      water_tag = water_surfaces[0]
+      136
+      119 -    # Fragment to create shared interface between water and sediment
+      137 +    # Collect all surfaces for fragmentation
+      138      all_surfaces = [(2, water_tag), (2, sediment_rect)]
+      139 +    for pml_name, pml_tag in pml_rects:
+      140 +        all_surfaces.append((2, pml_tag))
+      141 +
+      142 +    # Fragment to create shared interfaces
+      143      fragmented = occ.fragment(all_surfaces, [])
+      144      occ.synchronize()
+      145
+      124 -    # Identify the resulting surfaces
+      125 -    # After fragmentation, we need to determine which surface is water and which is sediment
+      146 +    # Identify the resulting surfaces by their center of mass
+      147      surfaces = model.getEntities(2)
+      148
+      149      water_tags = []
+      150      sediment_tags = []
+      151 +    pml_water_right_tags = []
+      152 +    pml_sediment_right_tags = []
+      153 +    pml_bottom_tags = []
+      154 +    pml_corner_tags = []
+      155
+      156 +    tol = 1e-6
+      157 +
+      158      for dim, tag in surfaces:
+      132 -        # Get the center of mass to determine which layer this surface belongs to
+      159          com_x, com_y, com_z = occ.getCenterOfMass(dim, tag)
+      134 -        if com_y < H:
+      160 +
+      161 +        # Classify by position
+      162 +        in_pml_r = com_x > r_max - tol
+      163 +        in_pml_z = com_y > z_max - tol
+      164 +        in_water_depth = com_y < H - tol
+      165 +        in_sediment_depth = H + tol < com_y < z_max - tol
+      166 +
+      167 +        if in_pml_r and in_pml_z:
+      168 +            pml_corner_tags.append(tag)
+      169 +        elif in_pml_r and in_water_depth:
+      170 +            pml_water_right_tags.append(tag)
+      171 +        elif in_pml_r and in_sediment_depth:
+      172 +            pml_sediment_right_tags.append(tag)
+      173 +        elif in_pml_z:
+      174 +            pml_bottom_tags.append(tag)
+      175 +        elif in_water_depth:
+      176              water_tags.append(tag)
+      177          else:
+      178              sediment_tags.append(tag)
+     ...
+      184      model.addPhysicalGroup(2, sediment_tags, tag=SEDIMENT_DOMAIN)
+      185      model.setPhysicalName(2, SEDIMENT_DOMAIN, "Sediment")
+      186
+      187 +    if pml_water_right_tags:
+      188 +        model.addPhysicalGroup(2, pml_water_right_tags, tag=PML_WATER_RIGHT)
+      189 +        model.setPhysicalName(2, PML_WATER_RIGHT, "PML Water Right")
+      190 +
+      191 +    if pml_sediment_right_tags:
+      192 +        model.addPhysicalGroup(2, pml_sediment_right_tags, tag=PML_SEDIMENT_RIGHT)
+      193 +        model.setPhysicalName(2, PML_SEDIMENT_RIGHT, "PML Sediment Right")
+      194 +
+      195 +    if pml_bottom_tags:
+      196 +        model.addPhysicalGroup(2, pml_bottom_tags, tag=PML_BOTTOM)
+      197 +        model.setPhysicalName(2, PML_BOTTOM, "PML Bottom")
+      198 +
+      199 +    if pml_corner_tags:
+      200 +        model.addPhysicalGroup(2, pml_corner_tags, tag=PML_CORNER)
+      201 +        model.setPhysicalName(2, PML_CORNER, "PML Corner")
+      202 +
+      203      # Get all boundary curves and classify them
+      204      all_curves = model.getEntities(1)
+      205
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 6 lines, removed 9 lines
+      210      interface_curves = []
+      211      axis_curves = []
+      212
+      213 -    tol = 1e-6  # Tolerance for coordinate comparisons
+      214 -
+      213      for dim, tag in all_curves:
+      214          # Get bounding box of curve
+      217 -        xmin, ymin, zmin, xmax, ymax, zmax = occ.getBoundingBox(dim, tag)
+      215 +        xmin, ymin, zmin, xmax, ymax, zmax_bb = occ.getBoundingBox(dim, tag)
+      216
+      217          # Check if curve is on the source circle (semicircle at r=0, centered at z_s)
+      218          # Source curves have xmax <= r_source and are curved
+      221 -        center_y = (ymin + ymax) / 2
+      219          if xmax <= r_source + tol and xmin < tol:
+      220              # Could be source or axis - check if it's curved
+      224 -            # Get parametric bounds and sample points
+      221              curve_type = model.getType(dim, tag)
+      222              if "Circle" in curve_type or "Ellipse" in curve_type:
+      223                  source_curves.append(tag)
+     ...
+      228              y_val = ymin
+      229              if abs(y_val) < tol:  # z = 0 (top surface)
+      230                  top_curves.append(tag)
+      235 -            elif abs(y_val - H) < tol:  # z = H (interface)
+      236 -                interface_curves.append(tag)
+      237 -            elif abs(y_val - z_max) < tol:  # z = z_max (bottom)
+      231 +            elif abs(y_val - H) < tol:  # z = H (interface, not in PML region)
+      232 +                if xmax <= r_max + tol:
+      233 +                    interface_curves.append(tag)
+      234 +            elif abs(y_val - z_total) < tol:  # z = z_total (bottom of PML)
+      235                  bottom_curves.append(tag)
+      236              continue
+      237
+     ...
+      240              x_val = xmin
+      241              if abs(x_val) < tol:  # r = 0 (axis)
+      242                  axis_curves.append(tag)
+      246 -            elif abs(x_val - r_max) < tol:  # r = r_max (right boundary)
+      243 +            elif abs(x_val - r_total) < tol:  # r = r_total (right boundary of PML)
+      244                  right_curves.append(tag)
+      245
+      246      # Add physical groups for boundaries
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 2 lines
+      355      parser.add_argument("--r-max", type=float, default=1000.0, help="Max radial extent (m)")
+      356      parser.add_argument("--z-max", type=float, default=225.0, help="Max depth (m)")
+      357      parser.add_argument("--r-source", type=float, default=5.0, help="Source exclusion radius (m)")
+      358 +    parser.add_argument("--pml-r", type=float, default=100.0, help="Radial PML thickness (m)")
+      359 +    parser.add_argument("--pml-z", type=float, default=100.0, help="Vertical PML thickness (m)")
+      360      parser.add_argument("--lc-fine", type=float, default=2.0, help="Fine mesh size (m)")
+      361      parser.add_argument("--lc-coarse", type=float, default=20.0, help="Coarse mesh size (m)")
+      362      parser.add_argument("--output", type=str, default="pekeris_mesh", help="Output filename (without extension)")
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 5 lines, removed 1 line
+      374      print(f"Creating Pekeris waveguide mesh:")
+      375      print(f"  Water depth H = {args.H} m")
+      376      print(f"  Source depth z_s = {args.z_s} m")
+      377 -    print(f"  Domain: r in [0, {args.r_max}] m, z in [0, {args.z_max}] m")
+      377 +    print(f"  Physical domain: r in [0, {args.r_max}] m, z in [0, {args.z_max}] m")
+      378 +    print(f"  PML thickness: radial={args.pml_r} m, vertical={args.pml_z} m")
+      379 +    print(f"  Total domain: r in [0, {args.r_max + args.pml_r}] m, z in [0, {args.z_max + args.pml_z}] m")
+      380      print(f"  Source exclusion radius = {args.r_source} m")
+      381      print(f"  Mesh sizes: fine={args.lc_fine} m, coarse={args.lc_coarse} m")
+      382
+     ...
+      388          r_max=args.r_max,
+      389          z_max=args.z_max,
+      390          r_source=args.r_source,
+      391 +        pml_r=args.pml_r,
+      392 +        pml_z=args.pml_z,
+      393          lc_fine=args.lc_fine,
+      394          lc_coarse=args.lc_coarse,
+      395      )
+
+● Let me test the updated script.
+
+● Bash(python pekeris_gmsh.py --output test_mesh 2>&1) timeout: 1m 0s
+  ⎿  Info    : Meshing 1D...
+     Info    : [  0%] Meshing curve 1 (Line)
+     Info    : [ 10%] Meshing curve 2 (Ellipse)
+     … +39 lines (ctrl+o to expand)
+
+● Bash(python -c "
+      import gmsh…)
+  ⎿  Info    : Reading 'test_mesh.msh'...
+     Info    : 41 entities
+     Info    : 1273 nodes
+     … +15 lines (ctrl+o to expand)
+
+● All physical groups are correctly assigned. Let me clean up and update the docstring.
+
+● Bash(rm test_mesh.msh)
+  ⎿  (No content)
+
+● Update(pekeris_gmsh.py)
+  ⎿  Added 7 lines
+       6  - Water layer (depth 0 to H)
+       7  - Sediment layer (depth H to z_max)
+       8  - Semicircular exclusion around the source at (r=0, z=z_s)
+       9 +- PML (Perfectly Matched Layer) absorbing regions
+      10
+      11 +PML regions:
+      12 +- PML_WATER_RIGHT: radial absorbing layer in water (r_max to r_max + pml_r)
+      13 +- PML_SEDIMENT_RIGHT: radial absorbing layer in sediment
+      14 +- PML_BOTTOM: vertical absorbing layer at bottom (z_max to z_max + pml_z)
+      15 +- PML_CORNER: corner region where radial and vertical PMLs meet
+      16 +
+      17  Coordinate system:
+      18  - r (horizontal): radial distance from axis of symmetry
+      19  - z (vertical): depth, positive downward from surface
+
+● Now let me commit the changes.
+
+● Bash(git diff pekeris_gmsh.py | head -100)
+  ⎿  diff --git a/pekeris_gmsh.py b/pekeris_gmsh.py
+     index 9573d53..f3b253c 100644
+     --- a/pekeris_gmsh.py
+     … +97 lines (ctrl+o to expand)
+
+● Bash(git add pekeris_gmsh.py && git commit -m "add PML absorbing layers to Pekeris waveguide mesh…)
+  ⎿  [fem 068cac2] add PML absorbing layers to Pekeris waveguide mesh
+      1 file changed, 109 insertions(+), 26 deletions(-)
+
+● Bash(git log --oneline -3)
+  ⎿  068cac2 add PML absorbing layers to Pekeris waveguide mesh
+     d110050 add Gmsh mesh generator for Pekeris waveguide
+     5e7acd4 add JAX-based solver with autodiff for gradients
+
+● Done. Added PML layers and committed (commit 068cac2). The mesh now includes:
+
+  Domains:
+  - WATER_DOMAIN (1), SEDIMENT_DOMAIN (2) - physical domain
+  - PML_WATER_RIGHT (3), PML_SEDIMENT_RIGHT (4) - radial absorbing layers
+  - PML_BOTTOM (5) - vertical absorbing layer
+  - PML_CORNER (6) - corner PML region
+
+  Usage:
+  # Default 100m PML layers
+  python pekeris_gmsh.py
+
+  # Custom PML thickness
+  python pekeris_gmsh.py --pml-r 50 --pml-z 75
+
+  # Disable PML (set to 0)
+  python pekeris_gmsh.py --pml-r 0 --pml-z 0
+
+✻ Crunched for 2m 27s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  50 files +0 -0

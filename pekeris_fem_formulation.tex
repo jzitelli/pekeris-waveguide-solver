@@ -1,0 +1,260 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{xcolor}
+
+\title{Finite Element Formulation for the Pekeris Waveguide}
+\author{Generated with Claude Code}
+\date{\today}
+
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\pp}{\partial}
+\newcommand{\conj}[1]{\overline{#1}}
+\newcommand{\abs}[1]{\left|#1\right|}
+\newcommand{\grad}{\nabla}
+\newcommand{\diverge}{\nabla \cdot}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+This document describes the finite element formulation implemented in \texttt{pekeris\_fem.py} for solving the acoustic wave propagation problem in a Pekeris waveguide. The Pekeris waveguide is a classical two-layer acoustic model consisting of:
+\begin{itemize}
+    \item A water layer (depth $0 \leq z \leq H$) with sound speed $c_1$ and density $\rho_1$
+    \item A sediment half-space ($z > H$) with sound speed $c_2 > c_1$ and density $\rho_2$
+\end{itemize}
+
+The problem is axisymmetric, so we solve in the $(r, z)$ meridional plane where $r$ is the radial distance from the axis of symmetry and $z$ is depth (positive downward).
+
+\section{Governing Equation}
+
+\subsection{Time-Harmonic Acoustic Wave Equation}
+
+For time-harmonic waves with angular frequency $\omega$ (assuming $e^{+i\omega t}$ time dependence), the acoustic pressure $p(r,z)$ satisfies the Helmholtz equation in a medium with spatially varying density $\rho$ and sound speed $c$:
+\begin{equation}
+    \diverge\left(\frac{1}{\rho}\grad p\right) + \frac{\omega^2}{\rho c^2} p = 0
+\end{equation}
+
+\subsection{Axisymmetric Form}
+
+In cylindrical coordinates $(r, \theta, z)$ with azimuthal symmetry ($\pp/\pp\theta = 0$), the divergence and gradient operators give:
+\begin{equation}
+    \frac{1}{r}\frac{\pp}{\pp r}\left(\frac{r}{\rho}\frac{\pp p}{\pp r}\right) + \frac{\pp}{\pp z}\left(\frac{1}{\rho}\frac{\pp p}{\pp z}\right) + \frac{\omega^2}{\rho c^2} p = 0
+\end{equation}
+
+This can be written more compactly as:
+\begin{equation}
+    \frac{1}{r}\diverge_{rz}\left(\frac{r}{\rho}\grad_{rz} p\right) + \frac{\omega^2}{\rho c^2} p = 0
+\end{equation}
+where $\grad_{rz} = (\pp/\pp r, \pp/\pp z)^T$ is the gradient in the $(r,z)$ plane.
+
+\section{Variational Formulation}
+
+\subsection{Weak Form Derivation}
+
+Multiplying by a test function $v$ and integrating over the domain $\Omega$ in the $(r,z)$ plane, we account for the axisymmetric geometry by including the factor $r$ in the measure (from the Jacobian of cylindrical coordinates):
+\begin{equation}
+    \int_\Omega \left[\diverge_{rz}\left(\frac{r}{\rho}\grad_{rz} p\right) + \frac{\omega^2 r}{\rho c^2} p\right] \conj{v} \, \dd r \, \dd z = 0
+\end{equation}
+
+Applying integration by parts (Green's first identity) to the divergence term:
+\begin{equation}
+    -\int_\Omega \frac{r}{\rho} \grad_{rz} p \cdot \grad_{rz} \conj{v} \, \dd r \, \dd z
+    + \int_{\pp\Omega} \frac{r}{\rho} \frac{\pp p}{\pp n} \conj{v} \, \dd s
+    + \int_\Omega \frac{\omega^2 r}{\rho c^2} p \, \conj{v} \, \dd r \, \dd z = 0
+\end{equation}
+
+where $\pp p/\pp n = \grad p \cdot \bm{n}$ is the normal derivative on the boundary.
+
+\subsection{Sesquilinear Form}
+
+Rearranging, we obtain the variational problem: Find $p \in V$ such that
+\begin{equation}
+    a(p, v) = L(v) \quad \forall v \in V
+\end{equation}
+where the sesquilinear form is:
+\begin{equation}
+    \boxed{a(p, v) = \int_\Omega \frac{r}{\rho} \grad p \cdot \grad \conj{v} \, \dd r \, \dd z
+    - \int_\Omega \frac{\omega^2 r}{\rho c^2} p \, \conj{v} \, \dd r \, \dd z}
+\end{equation}
+and the linear form (from boundary conditions) is:
+\begin{equation}
+    L(v) = \int_{\pp\Omega_N} \frac{r}{\rho} g_N \conj{v} \, \dd s
+\end{equation}
+where $g_N = \pp p/\pp n$ is the prescribed Neumann data.
+
+\section{Boundary Conditions}
+
+\subsection{Pressure-Release Surface ($z = 0$)}
+
+At the water surface, the acoustic pressure vanishes (Dirichlet condition):
+\begin{equation}
+    p(r, 0) = 0
+\end{equation}
+
+\subsection{Source Boundary Condition}
+
+The source is modeled as a small semicircular exclusion of radius $r_s$ centered at the source location $(0, z_s)$. On this boundary, we prescribe the normal velocity $v_n$:
+\begin{equation}
+    \frac{1}{\rho}\frac{\pp p}{\pp n} = -i\omega v_n
+\end{equation}
+
+This gives the source contribution to the linear form:
+\begin{equation}
+    L_{\text{source}}(v) = -i\omega \rho_1 v_n \int_{\Gamma_s} r \, \conj{v} \, \dd s
+\end{equation}
+
+\subsection{Axis of Symmetry ($r = 0$)}
+
+On the axis of symmetry, the natural boundary condition $\pp p/\pp r = 0$ is automatically satisfied by the weak form (no explicit treatment needed).
+
+\subsection{PML Absorbing Boundaries}
+
+See Section~\ref{sec:pml} for the treatment of far-field boundaries using Perfectly Matched Layers.
+
+\section{Perfectly Matched Layers (PML)}
+\label{sec:pml}
+
+\subsection{Complex Coordinate Stretching}
+
+To absorb outgoing waves and simulate an unbounded domain, we use Perfectly Matched Layers (PML) based on complex coordinate stretching. The idea is to transform the real coordinates $(r, z)$ to complex coordinates $(\tilde{r}, \tilde{z})$ in the PML region.
+
+For the radial PML (active for $r > r_{\max}$):
+\begin{equation}
+    \tilde{r} = r\left(1 + i\sigma_r(r)\right), \quad
+    \sigma_r(r) = \frac{\alpha}{k_0}\left(\frac{r - r_{\max}}{\Delta r}\right)^2
+\end{equation}
+
+For the vertical PML (active for $z > z_{\max}$):
+\begin{equation}
+    \tilde{z} = z\left(1 + i\sigma_z(z)\right), \quad
+    \sigma_z(z) = \frac{\alpha}{k_0}\left(\frac{z - z_{\max}}{\Delta z}\right)^2
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\alpha$ is the PML absorption strength parameter
+    \item $k_0 = \omega/c_1$ is the reference wavenumber
+    \item $\Delta r = r_{\text{pml}} - r_{\max}$ and $\Delta z = z_{\text{pml}} - z_{\max}$ are the PML thicknesses
+\end{itemize}
+
+\subsection{PML Stretching Functions}
+
+Define the stretching functions:
+\begin{equation}
+    s_r = 1 + i\sigma_r, \quad s_z = 1 + i\sigma_z
+\end{equation}
+
+The coordinate transformation has Jacobian:
+\begin{equation}
+    \bm{J} = \begin{pmatrix} \pp\tilde{r}/\pp r & 0 \\ 0 & \pp\tilde{z}/\pp z \end{pmatrix}
+    \approx \begin{pmatrix} s_r & 0 \\ 0 & s_z \end{pmatrix}
+\end{equation}
+
+\subsection{Modified Variational Form in PML}
+
+The PML can be interpreted as an anisotropic medium with modified material properties. The sesquilinear form in the PML region becomes:
+\begin{equation}
+    a_{\text{PML}}(p, v) = \int_{\Omega_{\text{PML}}} \frac{r}{\rho} \left(\bm{A} \grad p\right) \cdot \grad \conj{v} \, \dd r \, \dd z
+    - \int_{\Omega_{\text{PML}}} \frac{\omega^2 r}{\rho c^2} B \, p \, \conj{v} \, \dd r \, \dd z
+\end{equation}
+
+where the PML tensors are:
+\begin{equation}
+    \boxed{\bm{A} = \begin{pmatrix} s_z/s_r & 0 \\ 0 & s_r/s_z \end{pmatrix}, \quad B = s_r \cdot s_z}
+\end{equation}
+
+\subsection{PML Regions}
+
+The computational domain includes four PML regions with different stretching:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Region} & \textbf{Radial stretch} & \textbf{Vertical stretch} \\
+\midrule
+Water right PML & $s_r$ & 1 \\
+Sediment right PML & $s_r$ & 1 \\
+Bottom PML & 1 & $s_z$ \\
+Corner PML & $s_r$ & $s_z$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Material Properties}
+
+The domain consists of two layers with different acoustic properties:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Layer} & \textbf{Sound speed} & \textbf{Density} & \textbf{Domain} \\
+\midrule
+Water & $c_1$ & $\rho_1$ & $0 \leq z < H$ \\
+Sediment & $c_2$ & $\rho_2$ & $z \geq H$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The wavenumber in each layer is $k = \omega/c$, and the material properties are discontinuous across the water-sediment interface at $z = H$.
+
+\section{Finite Element Discretization}
+
+\subsection{Function Space}
+
+The pressure field is approximated using Lagrange finite elements of degree $p$:
+\begin{equation}
+    p_h(r, z) = \sum_{j=1}^{N} p_j \phi_j(r, z)
+\end{equation}
+where $\phi_j$ are the nodal basis functions and $p_j \in \mathbb{C}$ are the (complex) degrees of freedom.
+
+\subsection{Discrete System}
+
+The discrete variational problem leads to a linear system:
+\begin{equation}
+    \bm{K} \bm{p} = \bm{f}
+\end{equation}
+where:
+\begin{itemize}
+    \item $\bm{K}$ is the complex-valued stiffness matrix combining the gradient and mass terms
+    \item $\bm{p}$ is the vector of nodal pressure values
+    \item $\bm{f}$ is the load vector from the source boundary condition
+\end{itemize}
+
+The matrix entries are:
+\begin{equation}
+    K_{ij} = \int_\Omega \frac{r}{\rho} \grad \phi_j \cdot \grad \conj{\phi_i} \, \dd r \, \dd z
+    - \int_\Omega \frac{\omega^2 r}{\rho c^2} \phi_j \conj{\phi_i} \, \dd r \, \dd z
+\end{equation}
+with appropriate modifications in PML regions.
+
+\subsection{Implementation Notes}
+
+\begin{itemize}
+    \item The factor $r$ in the integrals is handled by including it explicitly in the UFL forms
+    \item Material properties ($\rho$, $c$) are represented using DG0 (piecewise constant) functions
+    \item PML tensors are computed symbolically using UFL expressions
+    \item The linear system is solved using a direct LU solver (MUMPS)
+\end{itemize}
+
+\section{Summary}
+
+The complete variational formulation combines contributions from the physical domain and PML regions:
+\begin{equation}
+    a(p,v) = a_{\text{water}}(p,v) + a_{\text{sediment}}(p,v) + \sum_{\text{PML regions}} a_{\text{PML}}(p,v)
+\end{equation}
+
+with boundary conditions:
+\begin{itemize}
+    \item Dirichlet: $p = 0$ at $z = 0$ (pressure-release surface)
+    \item Neumann: $\frac{1}{\rho}\frac{\pp p}{\pp n} = -i\omega v_n$ at source boundary
+    \item Natural: $\frac{\pp p}{\pp r} = 0$ at $r = 0$ (axis of symmetry)
+    \item PML absorption at far-field boundaries
+\end{itemize}
+
+\end{document}
