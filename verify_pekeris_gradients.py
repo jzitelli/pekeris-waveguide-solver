@@ -11,12 +11,14 @@ from mpi4py import MPI
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 from dolfinx import fem, default_scalar_type
 from dolfinx.geometry import bb_tree, compute_collisions_points, compute_colliding_cells
 import ufl
 
-from pekeris import PekerisWaveguide
+from pekeris import PekerisWaveguide, _compute_pressure_point, _compute_gradient_point
 from pekeris_gmsh import WATER_DOMAIN
 
 
@@ -119,7 +121,7 @@ def compute_errors_on_mesh(mesh_data, uh, wg, scale):
     Compute L2 and H1 errors by integrating over the mesh.
 
     This integrates over the physical water domain only (not PML or sediment).
-    The analytical solution is evaluated using UFL expressions for the discrete modes.
+    The analytical solution and its gradient are evaluated directly at DOF points.
     """
     msh = mesh_data.mesh
     cell_tags = mesh_data.cell_tags
@@ -131,34 +133,87 @@ def compute_errors_on_mesh(mesh_data, uh, wg, scale):
     x = ufl.SpatialCoordinate(msh)
     r, z = x[0], x[1]
 
-    # Build UFL expression for analytical solution (discrete modes only for simplicity)
-    # This is complex because the full Pekeris solution includes integrals
-    # Instead, we'll interpolate the analytical solution onto the mesh
-
-    # Create a function to hold the analytical solution
+    # Create function to hold the analytical pressure solution
     p_analytical_func = fem.Function(V)
-    grad_r_analytical_func = fem.Function(V)
-    grad_z_analytical_func = fem.Function(V)
 
-    # Get DOF coordinates
+    # Get DOF coordinates for scalar space
     V_dofs = V.tabulate_dof_coordinates()
+    n_dofs = len(V_dofs)
 
-    # Evaluate analytical solution at DOF points
-    p_vals = np.zeros(len(V_dofs), dtype=complex)
+    # Evaluate analytical pressure at DOF points (parallelized)
+    print(f"  Evaluating analytical pressure at {n_dofs} DOF points (parallelized)...")
+
+    # Build list of points to evaluate (only in water layer, away from axis)
+    p_eval_indices = []
+    p_args_list = []
     for i, coord in enumerate(V_dofs):
         ri, zi = coord[0], coord[1]
-        if ri > 0.5 and zi <= wg.H:  # Only in water layer, away from axis
-            p_vals[i] = scale * wg.pressure(ri, zi)
-        else:
-            p_vals[i] = 0.0
+        if ri > 0.5 and zi <= wg.H:
+            p_eval_indices.append(i)
+            p_args_list.append((wg, ri, zi))
+
+    # Parallel evaluation
+    n_jobs = multiprocessing.cpu_count()
+    p_vals = np.zeros(n_dofs, dtype=complex)
+
+    if len(p_args_list) > 0:
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            p_results = list(executor.map(_compute_pressure_point, p_args_list,
+                                          chunksize=max(1, len(p_args_list) // (n_jobs * 4))))
+
+        for idx, p_val in zip(p_eval_indices, p_results):
+            p_vals[idx] = scale * p_val
 
     p_analytical_func.x.array[:] = p_vals
 
-    # Error in pressure
-    error_p = uh - p_analytical_func
+    # Create vector function space for gradients
+    element = V.ufl_element()
+    degree = element.degree
+    V_grad = fem.functionspace(msh, ("DG", degree - 1, (2,)))
+
+    # Create functions for FEM gradient and analytical gradient
+    grad_fem_func = fem.Function(V_grad)
+    grad_analytical_func = fem.Function(V_grad)
+
+    # Interpolate FEM gradient
+    grad_expr = fem.Expression(ufl.grad(uh), V_grad.element.interpolation_points)
+    grad_fem_func.interpolate(grad_expr)
+
+    # Evaluate analytical gradient directly at gradient DOF points (parallelized)
+    V_grad_dofs = V_grad.tabulate_dof_coordinates()
+    n_grad_dofs = len(V_grad_dofs)
+
+    print(f"  Evaluating analytical gradient at {n_grad_dofs} DOF points (parallelized)...")
+
+    # Build list of points to evaluate (only in water layer, away from axis)
+    eval_indices = []
+    args_list = []
+    for i, coord in enumerate(V_grad_dofs):
+        ri, zi = coord[0], coord[1]
+        if ri > 0.5 and zi <= wg.H:
+            eval_indices.append(i)
+            args_list.append((wg, ri, zi))
+
+    # Parallel evaluation
+    n_jobs = multiprocessing.cpu_count()
+    grad_vals = np.zeros(n_grad_dofs * 2, dtype=complex)
+
+    if len(args_list) > 0:
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            results = list(executor.map(_compute_gradient_point, args_list,
+                                        chunksize=max(1, len(args_list) // (n_jobs * 4))))
+
+        for idx, (gr, gz) in zip(eval_indices, results):
+            grad_vals[2*idx] = scale * gr
+            grad_vals[2*idx + 1] = scale * gz
+
+    grad_analytical_func.x.array[:] = grad_vals
 
     # Define measure restricted to water domain only
     dx_water = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)(WATER_DOMAIN)
+
+    # Error in pressure
+    error_p = uh - p_analytical_func
 
     # L2 norm with axisymmetric weighting
     L2_error_sq = fem.form(ufl.inner(error_p, error_p) * r * dx_water)
@@ -167,12 +222,10 @@ def compute_errors_on_mesh(mesh_data, uh, wg, scale):
     L2_error = np.sqrt(np.abs(fem.assemble_scalar(L2_error_sq)))
     L2_norm = np.sqrt(np.abs(fem.assemble_scalar(L2_norm_sq)))
 
-    # H1 semi-norm (gradient only)
-    grad_error = ufl.grad(error_p)
+    # H1 semi-norm: use directly evaluated analytical gradient
+    grad_error = grad_fem_func - grad_analytical_func
     H1_semi_error_sq = fem.form(ufl.inner(grad_error, grad_error) * r * dx_water)
-
-    grad_analytical = ufl.grad(p_analytical_func)
-    H1_semi_norm_sq = fem.form(ufl.inner(grad_analytical, grad_analytical) * r * dx_water)
+    H1_semi_norm_sq = fem.form(ufl.inner(grad_analytical_func, grad_analytical_func) * r * dx_water)
 
     H1_semi_error = np.sqrt(np.abs(fem.assemble_scalar(H1_semi_error_sq)))
     H1_semi_norm = np.sqrt(np.abs(fem.assemble_scalar(H1_semi_norm_sq)))
