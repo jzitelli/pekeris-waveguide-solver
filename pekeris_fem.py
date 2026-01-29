@@ -31,44 +31,6 @@ from pekeris_gmsh import (
 )
 
 
-def pml_stretch_r(r, alpha, k0, r_max, r_pml):
-    """
-    PML coordinate stretching in radial direction.
-
-    For r > r_max, applies complex coordinate transformation:
-        r' = r + j*alpha/k0 * ((r - r_max) / (r_pml - r_max))^2 * (r - r_max)
-
-    Parameters
-    ----------
-    r : ufl expression
-        Radial coordinate
-    alpha : float
-        PML absorption strength
-    k0 : float
-        Reference wavenumber
-    r_max : float
-        Start of PML region
-    r_pml : float
-        Total extent including PML
-    """
-    # Smooth ramp from r_max to r_pml
-    delta = r_pml - r_max
-    # Quadratic profile for PML absorption
-    sigma = alpha / k0 * ((r - r_max) / delta) ** 2
-    return r * (1 + 1j * sigma)
-
-
-def pml_stretch_z(z, alpha, k0, z_max, z_pml):
-    """
-    PML coordinate stretching in z direction.
-
-    For z > z_max, applies complex coordinate transformation.
-    """
-    delta = z_pml - z_max
-    sigma = alpha / k0 * ((z - z_max) / delta) ** 2
-    return z * (1 + 1j * sigma)
-
-
 def create_pml_tensors(x, alpha, k0, r_max, z_max, pml_r, pml_z, region):
     """
     Create PML transformation tensors for the axisymmetric formulation.
@@ -525,7 +487,7 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
 
     # Plot 1: Magnitude in dB
     plotter.subplot(0, 0)
-    plotter.add_text("|p| (dB re max)", font_size=12)
+    plotter.add_text("|p| (dB re max)", font_size=9)
     plotter.add_mesh(grid.copy(), scalars="p (dB)", cmap='viridis', clim=[-60, 0], show_edges=False)
     # Add interface line
     plotter.add_mesh(
@@ -542,7 +504,7 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
 
     # Plot 2: Real part
     plotter.subplot(0, 1)
-    plotter.add_text("Re(p)", font_size=12)
+    plotter.add_text("Re(p)", font_size=9)
     vlim = np.max(np.abs(np.real(p_values))) * 0.1
     plotter.add_mesh(grid.copy(), scalars="Re(p)", cmap='RdBu_r', clim=[-vlim, vlim], show_edges=False)
     plotter.add_mesh(
@@ -554,7 +516,7 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
 
     # Plot 3: Imaginary part
     plotter.subplot(1, 0)
-    plotter.add_text("Im(p)", font_size=12)
+    plotter.add_text("Im(p)", font_size=9)
     vlim_im = np.max(np.abs(np.imag(p_values))) * 0.1
     plotter.add_mesh(grid.copy(), scalars="Im(p)", cmap='RdBu_r', clim=[-vlim_im, vlim_im], show_edges=False)
     plotter.add_mesh(
@@ -566,7 +528,7 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
 
     # Plot 4: Absolute value
     plotter.subplot(1, 1)
-    plotter.add_text("|p|", font_size=12)
+    plotter.add_text("|p|", font_size=9)
     plotter.add_mesh(grid.copy(), scalars="|p|", cmap='hot', show_edges=False)
     plotter.add_mesh(
         pyvista.Line([0, H, 0], [r_max + pml_r, H, 0]),
@@ -579,7 +541,7 @@ def visualize_solution(mesh_data, uh, params, save_only=False, filename="pekeris
     freq = params['omega'] / (2 * np.pi)
     plotter.add_text(
         f"Pekeris FEM: f={freq:.1f} Hz, H={H}m, c1={params['c1']}m/s, c2={params['c2']}m/s",
-        position='upper_edge', font_size=14
+        position='upper_edge', font_size=11
     )
 
     if save_only:
