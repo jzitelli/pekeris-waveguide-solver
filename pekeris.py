@@ -25,6 +25,15 @@ def _compute_pressure_point(args):
     return wg.pressure(r, z)
 
 
+def _compute_gradient_point(args):
+    """Worker function for parallel gradient computation.
+
+    This is a module-level function so it can be pickled for multiprocessing.
+    """
+    wg, r, z = args
+    return wg.pressure_gradient(r, z)
+
+
 class PekerisWaveguide:
     """
     Pekeris waveguide solver.
@@ -269,12 +278,12 @@ class PekerisWaveguide:
         """
         # d/dr integrals
         int_real_dr, _ = quad(self._integrand_definite_real_dr, self.branch_start, self.k1,
-                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                             args=(r, z), limit=200, epsrel=self.quadrature_rtol)
         int_imag_dr, _ = quad(self._integrand_definite_imag_dr, self.branch_start, self.k1,
-                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                             args=(r, z), limit=200, epsrel=self.quadrature_rtol)
         cutoff = np.sqrt((100.0 / r)**2 + self.k1_sqrd)
         int_indef_dr, _ = quad(self._integrand_indefinite_dr, self.k1, cutoff,
-                              args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                              args=(r, z), limit=200, epsrel=self.quadrature_rtol)
 
         # Use H0^(2) = J0 - i*Y0 convention (consistent with discrete modes)
         integral_dr = complex(int_real_dr, -(int_imag_dr + int_indef_dr))
@@ -282,11 +291,11 @@ class PekerisWaveguide:
 
         # d/dz integrals
         int_real_dz, _ = quad(self._integrand_definite_real_dz, self.branch_start, self.k1,
-                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                             args=(r, z), limit=200, epsrel=self.quadrature_rtol)
         int_imag_dz, _ = quad(self._integrand_definite_imag_dz, self.branch_start, self.k1,
-                             args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                             args=(r, z), limit=200, epsrel=self.quadrature_rtol)
         int_indef_dz, _ = quad(self._integrand_indefinite_dz, self.k1, cutoff,
-                              args=(r, z), limit=100, epsrel=self.quadrature_rtol)
+                              args=(r, z), limit=200, epsrel=self.quadrature_rtol)
 
         # Use H0^(2) = J0 - i*Y0 convention (consistent with discrete modes)
         integral_dz = complex(int_real_dz, -(int_imag_dz + int_indef_dz))
@@ -407,8 +416,8 @@ class PekerisWaveguide:
             grad_r += cont_r
             grad_z += cont_z
 
-        # Correct for z convention and conjugate for exp(+iωt)
-        return np.conj(grad_r), np.conj(-grad_z)
+        # Conjugate for exp(+iωt) time convention
+        return np.conj(grad_r), np.conj(grad_z)
 
     def pressure_field(self, r_array: np.ndarray, z_array: np.ndarray,
                       show_progress: bool = True, n_jobs: int = None) -> np.ndarray:
@@ -468,6 +477,67 @@ class PekerisWaveguide:
             print(f"  Completed {total} points")
 
         return P
+
+    def pressure_gradient_field(self, r_array: np.ndarray, z_array: np.ndarray,
+                                show_progress: bool = True, n_jobs: int = None) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Compute pressure gradient field on a grid.
+
+        Parameters
+        ----------
+        r_array : np.ndarray
+            1D array of radial distances (m)
+        z_array : np.ndarray
+            1D array of depths (m)
+        show_progress : bool
+            Print progress indicator (useful when including continuous spectrum)
+        n_jobs : int
+            Number of parallel processes. Default (None) uses all available CPUs.
+            Set to 1 for serial computation.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            (grad_r, grad_z) - 2D complex arrays of gradient values, each shape (len(z_array), len(r_array))
+        """
+        nz, nr = len(z_array), len(r_array)
+        total = nz * nr
+
+        # Determine number of workers
+        if n_jobs is None:
+            n_jobs = multiprocessing.cpu_count()
+        n_jobs = min(n_jobs, total)  # Don't use more workers than points
+
+        # Serial computation
+        if n_jobs == 1:
+            grad_r = np.zeros((nz, nr), dtype=complex)
+            grad_z = np.zeros((nz, nr), dtype=complex)
+            for i, z in enumerate(z_array):
+                for j, r in enumerate(r_array):
+                    grad_r[i, j], grad_z[i, j] = self.pressure_gradient(r, z)
+                if show_progress and (i + 1) % 10 == 0:
+                    print(f"  Progress: {(i+1)*nr}/{total} points")
+            return grad_r, grad_z
+
+        # Parallel computation
+        if show_progress:
+            print(f"  Using {n_jobs} parallel workers for {total} gradient points...")
+
+        # Build list of all (wg, r, z) argument tuples
+        args_list = [(self, r, z) for z in z_array for r in r_array]
+
+        # Use ProcessPoolExecutor for parallel computation
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            results = list(executor.map(_compute_gradient_point, args_list, chunksize=max(1, total // (n_jobs * 4))))
+
+        # Reshape results to 2D arrays
+        grad_r = np.array([r[0] for r in results], dtype=complex).reshape(nz, nr)
+        grad_z = np.array([r[1] for r in results], dtype=complex).reshape(nz, nr)
+
+        if show_progress:
+            print(f"  Completed {total} gradient points")
+
+        return grad_r, grad_z
 
     def __repr__(self):
         mode_str = "discrete only" if self.discrete_modes_only else "discrete + continuous"
