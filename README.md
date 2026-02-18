@@ -1,11 +1,12 @@
 # pekeris-waveguide-solver
 
-Python script for calculating the acoustic pressure (and gradients) in a Pekeris waveguide, which is a cannonical simplistic model of a shallow-water waveguide.
+Python script for calculating the acoustic pressure (and gradients) in a Pekeris waveguide, which is a canonical simplistic model of a shallow-water acoustic waveguide.
 
 The Python script `pekeris.py` was generated from original Fortran/C code (written around 2010 as part of my academic research) with assistance from Claude Code.  The original Fortran/C source code is also included for reference.
 
 When the Fortran implementation was originally written, its output was verified against a finite-element model (*hp2d*, developed by the research group of Leszek Demkowicz at UT Austin).  The script `pekeris_fem.py` sets up a similar FEM model using FEniCSx and Gmsh.
 
+Claude Code was used extensively to generate the Python code in this repository.  The `claude-code-logs` folder contains logs of the prompting / interactions with Claude Code.
 
 ![Demo screenshot](images/pekeris_field.png)
 
